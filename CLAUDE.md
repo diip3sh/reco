@@ -52,6 +52,53 @@ xcodebuild -scheme BetterCapture -configuration Debug -destination 'platform=mac
   `@preconcurrency import ScreenCaptureKit`.
 - Test suites that touch main-actor app types (most models) are marked `@MainActor`.
 
+## Quality bar
+
+We are building a small, fast, polished app. Every change is minimal, clean and production quality;
+AGENTS.md's rules apply, and these add to them.
+
+### Architecture
+
+MVVM with `@Observable` (Apple's pattern, and upstream's), built as a **functional core with an
+imperative shell**. No TCA, VIPER, Clean-Architecture layers or DI frameworks: they add a dependency
+or indirection that doesn't pay for itself in an AVFoundation app.
+
+| Layer | Holds | Rules |
+|---|---|---|
+| Core (`Model/`, pure helpers in `Service/`) | Value types and pure functions: time mapping, geometry, pauses, dedup, auto-zoom, smoothing, settings rules | `nonisolated`, `Sendable`, no side effects or singletons, fully unit tested. E.g. `RecordingPauses`, `CursorShapeTracker`, `InputTelemetry.videoPixel` |
+| Shell (`Service/`) | One service per system boundary: ScreenCaptureKit, AVAssetWriter, event taps, files | Thin: gather input, call the core, apply the result. Explicit isolation: `@MainActor`, or `nonisolated` + a lock |
+| `ViewModel/` | `@MainActor @Observable` state and intents | Calls services; no rules that belong in the core |
+| `View/` | Layout | Reads view-model state, calls intents; no logic |
+
+- Dependencies point down only: View → ViewModel → Service → Core. Services report up through
+  delegates or `async` results, never by reaching into a view model.
+- New features get a feature folder, `BetterCapture/<Feature>/{Model,Render,Service,ViewModel,View}`
+  (see spec 0003). Existing layer folders stay as they are.
+- One rule, one place: logic lives in exactly one function that every caller reuses (e.g.
+  `SettingsStore.capturesCursor` drives both the capture and the telemetry). Never re-derive it.
+- Protocols only where a test needs a fake or there are two real conformers.
+
+### Code
+
+- The smallest change that fully solves the problem. Delete before adding; no speculative options,
+  wrappers or "just in case" code.
+- Match the surrounding code. Name things by meaning. Comments say *why*, and record measured facts
+  with their numbers (like `shadowTopFraction`) so nobody re-derives them.
+- Done means: zero compiler warnings, all tests pass, SwiftLint clean on touched files, new logic
+  has tests, and docs (this file, specs) match the code.
+
+### Performance
+
+The app records 4K60 in real time, and the editor must render a frame in under 8 ms.
+- Hot paths (capture queue, compositor, per-frame and per-event code): no allocation that grows
+  with recording length, no I/O or logging per sample, no main-actor hops, locks held only briefly.
+- Precompute once, look up per frame (binary search, O(1) sampled tracks); build images once, never
+  per frame.
+- Keep heavy work off the main actor (`@concurrent`) and high-frequency values out of observed state.
+- Measure before and after optimising (`OSSignposter`, Instruments). A performance claim needs a number.
+- Prefer Apple frameworks (AVFoundation, Core Image on Metal, Accelerate) over hand-rolled or
+  third-party code.
+
 ## Features added in this fork
 
 Branches are stacked: `feat/input-telemetry` → `feat/cursor-sprites` → `feat/pause-resume`.
