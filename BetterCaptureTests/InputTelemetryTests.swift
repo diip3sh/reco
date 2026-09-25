@@ -84,6 +84,39 @@ struct InputTelemetryTests {
         #expect(rebased.geometry.map(\.screenRect.minX) == [0, 10])
     }
 
+    @Test func rebasedPinsTheLastCursorShapeBeforeTheAnchorToZero() {
+        var telemetry = InputTelemetry(capture: capture, keystrokesAvailable: false)
+        telemetry.cursorShapes = [.init(time: 99, sprite: 0), .init(time: 103, sprite: 1), .init(time: 111, sprite: 0)]
+
+        let rebased = telemetry.rebased(anchor: 100, duration: 10)
+
+        #expect(rebased.cursorShapes == [.init(time: 0, sprite: 0), .init(time: 3, sprite: 1)])
+    }
+
+    // MARK: - CursorShapeTracker
+
+    @Test func cursorShapesStoreEachImageOnceAndKeepOnlyChanges() {
+        let arrow = CursorShapeTracker.Fingerprint(size: CGSize(width: 28, height: 40), hotspot: CGPoint(x: 4.5, y: 4), pixels: Data([1, 2]))
+        var iBeam = arrow
+        iBeam.pixels = Data([3, 4]) // Same size and hotspot, different image
+        var tracker = CursorShapeTracker()
+        var encodeCount = 0
+        let png = {
+            encodeCount += 1
+            return Data([0x89])
+        }
+
+        tracker.record(arrow, time: 1, png: png)
+        tracker.record(arrow, time: 2, png: png)
+        tracker.record(iBeam, time: 3, png: png)
+        tracker.record(arrow, time: 4, png: png)
+
+        #expect(tracker.sprites.map(\.id) == [0, 1])
+        #expect(tracker.sprites.map(\.hotspot) == [CGPoint(x: 4.5, y: 4), CGPoint(x: 4.5, y: 4)])
+        #expect(encodeCount == 2)
+        #expect(tracker.shapes == [.init(time: 1, sprite: 0), .init(time: 3, sprite: 1), .init(time: 4, sprite: 0)])
+    }
+
     // MARK: - videoPixel
 
     @Test func videoPixelScalesADisplayCaptureByItsScaleFactor() {
@@ -209,12 +242,16 @@ struct InputTelemetryTests {
         telemetry.clicks = [.init(time: 1, location: CGPoint(x: 120, y: 80), button: .right, isDown: true, clickCount: 2)]
         telemetry.scrolls = [.init(time: 1.5, location: CGPoint(x: 120, y: 80), delta: CGVector(dx: 0, dy: 4))]
         telemetry.keys = [.init(time: 2, keyCode: 8, modifiers: ["command"], isRepeat: false)]
+        telemetry.cursorSprites = [.init(id: 0, size: CGSize(width: 28, height: 40), hotspot: CGPoint(x: 4.5, y: 4), png: Data([0x89, 0x50, 0x4E, 0x47]))]
+        telemetry.cursorShapes = [.init(time: 0, sprite: 0)]
 
         let data = try JSONEncoder().encode(telemetry)
         let object = try JSONSerialization.jsonObject(with: data)
         let json = try #require(object as? [String: Any])
 
-        #expect(json["version"] as? Int == 2)
+        #expect(json["version"] as? Int == 3)
+        let sprites = try #require(json["cursorSprites"] as? [[String: Any]])
+        #expect(sprites.first?["png"] as? String == "iVBORw==")
         #expect(json["geometry"] != nil)
         #expect(try JSONDecoder().decode(InputTelemetry.self, from: data) == telemetry)
     }

@@ -10,8 +10,8 @@ import AVFoundation
 import OSLog
 import ScreenCaptureKit
 
-/// Records cursor, click, scroll and keystroke telemetry during a recording and writes it as a
-/// JSON sidecar next to the video.
+/// Records cursor, cursor shape, click, scroll and keystroke telemetry during a recording and
+/// writes it as a JSON sidecar next to the video.
 ///
 /// Events are buffered with raw host-clock times because the video's time zero is only known once
 /// its first sample arrives. `writeSidecar(for:sessionStart:)` moves them onto the video timeline.
@@ -24,6 +24,8 @@ final class InputTelemetryRecorder {
     private var mouseMonitor: Any?
     private var keyTap: CFMachPort?
     private var keyTapSource: CFRunLoopSource?
+    private var cursorShapes = CursorShapeTracker()
+    private var nextShapeSampleTime: Double = 0
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture", category: "InputTelemetryRecorder")
 
@@ -50,6 +52,9 @@ final class InputTelemetryRecorder {
         ) { [weak self] event in
             self?.record(event)
         }
+
+        cursorShapes = CursorShapeTracker()
+        nextShapeSampleTime = 0
 
         let interval = Duration.seconds(1 / min(frameRate, 60))
         cursorTask = Task { [weak self] in
@@ -96,6 +101,8 @@ final class InputTelemetryRecorder {
         guard var telemetry, sessionStart.isNumeric else { return }
         self.telemetry = nil
         telemetry.geometry = geometry
+        telemetry.cursorSprites = cursorShapes.sprites
+        telemetry.cursorShapes = cursorShapes.shapes
 
         // The file ends at its last video frame, which is before stop if the screen was static
         let duration = (try? await AVURLAsset(url: videoURL).load(.duration).seconds) ?? .infinity
@@ -113,9 +120,36 @@ final class InputTelemetryRecorder {
     // MARK: - Event Handling
 
     private func sampleCursor() {
+        let now = currentHostTime()
+
+        // Reading the cursor image costs ~0.3 ms, so its shape is checked at most 15 times a second
+        if now >= nextShapeSampleTime {
+            nextShapeSampleTime = now + 1.0 / 15
+            sampleCursorShape(at: now)
+        }
+
         let location = InputTelemetry.topLeft(NSEvent.mouseLocation, primaryScreenHeight: primaryScreenHeight)
         guard location != telemetry?.cursor.last?.location else { return }
-        telemetry?.cursor.append(.init(time: currentHostTime(), location: location))
+        telemetry?.cursor.append(.init(time: now, location: location))
+    }
+
+    /// Records the cursor image shown system-wide, whichever app is frontmost.
+    ///
+    /// `NSCursor.current` is only this app's cursor. `currentSystem` is slated for deprecation
+    /// and may return `nil` in a future macOS; then no shapes are recorded.
+    private func sampleCursorShape(at time: Double) {
+        guard let cursor = NSCursor.currentSystem else { return }
+
+        let bitmaps = cursor.image.representations.compactMap { $0 as? NSBitmapImageRep }
+        guard let smallest = bitmaps.min(by: { $0.pixelsWide < $1.pixelsWide }),
+              let largest = bitmaps.max(by: { $0.pixelsWide < $1.pixelsWide }),
+              let pixels = smallest.cgImage?.dataProvider?.data as Data?
+        else { return }
+
+        let fingerprint = CursorShapeTracker.Fingerprint(size: cursor.image.size, hotspot: cursor.hotSpot, pixels: pixels)
+        cursorShapes.record(fingerprint, time: time) {
+            largest.representation(using: .png, properties: [:]) ?? Data()
+        }
     }
 
     private func record(_ event: NSEvent) {

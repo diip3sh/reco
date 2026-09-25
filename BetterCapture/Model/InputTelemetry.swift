@@ -18,7 +18,7 @@ import Foundation
 nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
 
     /// Bumped whenever the file layout changes incompatibly.
-    var version = 2
+    var version = 3
     var capture: Capture
 
     /// Whether keystrokes were recorded. False when Input Monitoring was not granted.
@@ -30,6 +30,12 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
     var clicks: [Click] = []
     var scrolls: [Scroll] = []
     var keys: [Key] = []
+
+    /// Each distinct cursor image, stored once and referenced by ``cursorShapes``.
+    var cursorSprites: [CursorSprite] = []
+
+    /// The cursor's appearance, recorded whenever it changed. Each entry applies until the next.
+    var cursorShapes: [CursorShape] = []
 
     // MARK: - Types
 
@@ -110,6 +116,26 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
         var isRepeat: Bool
     }
 
+    /// A cursor image, so an editor can redraw the cursor on a video recorded without it.
+    nonisolated struct CursorSprite: Codable, Equatable, Sendable {
+        var id: Int
+
+        /// The image's size in points.
+        var size: CGSize
+
+        /// The click point, in points from the image's top-left corner.
+        var hotspot: CGPoint
+
+        /// The image at its highest resolution, as PNG. Base64 in JSON.
+        var png: Data
+    }
+
+    /// The cursor switching to the ``CursorSprite`` with id `sprite`.
+    nonisolated struct CursorShape: Codable, Equatable, Sendable {
+        var time: Double
+        var sprite: Int
+    }
+
     // MARK: - Conversion
 
     /// Share of a window shadow's vertical extent that sits above the window; the rest is below.
@@ -175,12 +201,13 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
 
     /// Returns a copy with every time moved onto the video timeline and events outside it dropped.
     ///
-    /// The last cursor position and geometry before the first frame are kept at time 0, so values
-    /// that never change during the recording are still known.
+    /// The last cursor position, cursor shape and geometry before the first frame are kept at
+    /// time 0, so values that never change during the recording are still known.
     func rebased(anchor: Double, duration: Double) -> InputTelemetry {
         var copy = self
         copy.geometry = Self.rebaseTrack(geometry, time: \.time, anchor: anchor, duration: duration)
         copy.cursor = Self.rebaseTrack(cursor, time: \.time, anchor: anchor, duration: duration)
+        copy.cursorShapes = Self.rebaseTrack(cursorShapes, time: \.time, anchor: anchor, duration: duration)
         copy.clicks = Self.rebase(clicks, time: \.time, anchor: anchor, duration: duration)
         copy.scrolls = Self.rebase(scrolls, time: \.time, anchor: anchor, duration: duration)
         copy.keys = Self.rebase(keys, time: \.time, anchor: anchor, duration: duration)
