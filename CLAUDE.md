@@ -138,7 +138,7 @@ CG geometry types encode as arrays (`CGRect` → `[[x,y],[w,h]]`). Bump `version
 | F1 input telemetry | Done |
 | F2 cursor sprites | Done |
 | F3 `.bettercapture` project bundle | **Deferred — build it together with the editor (S1).** Plain `.mov` stays the default; bundle only when telemetry is on; clipboard/notifications must use `screen.mov` inside it |
-| F4 pause / resume | Done; audio sync across a pause still needs a real-recording check (see below) |
+| F4 pause / resume | Done and verified on real recordings: audio ticks land within ~30 ms across pauses, all tracks match video length (incl. stop while paused) |
 | F5 countdown | Next candidate |
 | F6 audio robustness (mic hot-swap #208, gain #209, level meters #153) | Todo |
 | F7 remember last selection (#172) | Todo |
@@ -151,15 +151,18 @@ Reference repos for later work: `syi0808/screenize` and `imbhargav5/open-recorde
 
 ## Known open items
 
-- **F4 audio check:** record the Terminal window with system audio + mic on, running
-  `while true; do date +%T.%N; afplay /System/Library/Sounds/Tink.aiff; done`; once without pausing
-  and once with two pauses. Each audio track should match video length and ticks should line up
-  with the clock across cuts. The one test so far had only silent system audio, which ended 1.5 s
-  before the video.
 - Not yet verified on real recordings: area capture mapping, a window moved/resized mid-recording.
 - `RecorderViewModel` is over SwiftLint's type size limit (pre-existing); split it before adding more.
 
 ## Verifying against real recordings
+
+Recordings can be scripted: select content once in the menu, then drive the running build with
+`open -g -a /tmp/bc-build/dd/Build/Products/Debug/BetterCapture.app "bettercapture://toggle"` (starts
+when content is selected, stops when recording) and `bettercapture://pause`. Use `-a` with the path:
+a plain `open` may launch another copy (e.g. Xcode's DerivedData build). Play `afplay` ticks at
+logged wall times, then check each tick lands where expected in the audio, shifted by the paused time.
+Watch the app's logs with `/usr/bin/log stream --level info --predicate 'subsystem == "com.sattlerjoshua.BetterCapture"'`
+(the full path matters: in zsh, `log` is a builtin).
 
 Frame-level checks beat eyeballing. With `ffmpeg`/`ffprobe` (Homebrew):
 - Stream lengths: `ffprobe -v error -show_entries stream=codec_type,duration,nb_frames -of compact <file>`
