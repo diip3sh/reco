@@ -169,6 +169,18 @@ struct InputTelemetryTests {
         #expect(tracker.shapes == [.init(time: 1, sprite: 0), .init(time: 3, sprite: 1), .init(time: 4, sprite: 0)])
     }
 
+    @Test func cursorShapesTakeTheKindOfAnIdenticalStandardCursor() {
+        let arrow = CursorShapeTracker.Fingerprint(size: CGSize(width: 28, height: 40), hotspot: CGPoint(x: 5, y: 5), pixels: Data([1, 2]))
+        var custom = arrow
+        custom.pixels = Data([1, 3]) // An app's own arrow: same size and hotspot, different image
+        var tracker = CursorShapeTracker(standardCursors: [(kind: .arrow, fingerprint: arrow)])
+
+        tracker.record(arrow, time: 1) { Data() }
+        tracker.record(custom, time: 2) { Data() }
+
+        #expect(tracker.sprites.map(\.kind) == [.arrow, nil])
+    }
+
     // MARK: - videoPixel
 
     @Test func videoPixelScalesADisplayCaptureByItsScaleFactor() {
@@ -289,12 +301,15 @@ struct InputTelemetryTests {
 
     @Test func encodingRoundTripsAndIncludesTheVersion() throws {
         var telemetry = InputTelemetry(capture: capture, keystrokesAvailable: true)
+        telemetry.capture.cursorInVideo = false
         telemetry.geometry = [geometry]
         telemetry.cursor = [.init(time: 0.5, location: CGPoint(x: 120, y: 80))]
         telemetry.clicks = [.init(time: 1, location: CGPoint(x: 120, y: 80), button: .right, isDown: true, clickCount: 2)]
         telemetry.scrolls = [.init(time: 1.5, location: CGPoint(x: 120, y: 80), delta: CGVector(dx: 0, dy: 4))]
         telemetry.keys = [.init(time: 2, keyCode: 8, modifiers: ["command"], isRepeat: false)]
-        telemetry.cursorSprites = [.init(id: 0, size: CGSize(width: 28, height: 40), hotspot: CGPoint(x: 4.5, y: 4), png: Data([0x89, 0x50, 0x4E, 0x47]))]
+        telemetry.cursorSprites = [
+            .init(id: 0, kind: .arrow, size: CGSize(width: 28, height: 40), hotspot: CGPoint(x: 4.5, y: 4), png: Data([0x89, 0x50, 0x4E, 0x47]))
+        ]
         telemetry.cursorShapes = [.init(time: 0, sprite: 0)]
 
         let data = try JSONEncoder().encode(telemetry)
@@ -302,9 +317,29 @@ struct InputTelemetryTests {
         let json = try #require(object as? [String: Any])
 
         #expect(json["version"] as? Int == 3)
+        let capture = try #require(json["capture"] as? [String: Any])
+        #expect(capture["cursorInVideo"] as? Bool == false)
         let sprites = try #require(json["cursorSprites"] as? [[String: Any]])
         #expect(sprites.first?["png"] as? String == "iVBORw==")
+        #expect(sprites.first?["kind"] as? String == "arrow")
         #expect(json["geometry"] != nil)
         #expect(try JSONDecoder().decode(InputTelemetry.self, from: data) == telemetry)
+    }
+
+    @Test func decodingAFileWithoutCursorInVideoOrKindsReadsTheCursorAsInTheVideo() throws {
+        let json = """
+        {
+          "version": 3, "keystrokesAvailable": false,
+          "capture": { "kind": "display", "videoSize": [3024, 1964] },
+          "geometry": [], "cursor": [], "clicks": [], "scrolls": [], "keys": [],
+          "cursorSprites": [{ "id": 0, "size": [28, 40], "hotspot": [5, 5], "png": "iVBORw==" }],
+          "cursorShapes": [{ "time": 0, "sprite": 0 }]
+        }
+        """
+
+        let telemetry = try JSONDecoder().decode(InputTelemetry.self, from: Data(json.utf8))
+
+        #expect(telemetry.capture.cursorInVideo)
+        #expect(telemetry.cursorSprites.first?.kind == nil)
     }
 }

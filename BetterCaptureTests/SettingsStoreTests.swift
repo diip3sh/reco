@@ -44,6 +44,27 @@ struct SettingsStoreTests {
         #expect(store.recordInputTelemetry == false)
     }
 
+    @Test func keepSystemCursorInVideoIsOffByDefault() {
+        let store = makeStore()
+        #expect(store.keepSystemCursorInVideo == false)
+    }
+
+    @Test func cursorIsLeftToTheEditorWhileTelemetryIsRecordedUnlessKept() {
+        let store = makeStore()
+        #expect(store.capturesCursor)
+
+        store.recordInputTelemetry = true
+        #expect(store.leavesCursorToEditor)
+        #expect(!store.capturesCursor)
+
+        store.keepSystemCursorInVideo = true
+        #expect(!store.leavesCursorToEditor)
+        #expect(store.capturesCursor)
+
+        store.showCursor = false
+        #expect(!store.capturesCursor)
+    }
+
     @Test func defaultVideoQualityIsMedium() {
         let store = makeStore()
         #expect(store.videoQuality == .medium)

@@ -11,7 +11,8 @@ import Foundation
 /// Collects the cursor's distinct images and when the cursor switched between them, for
 /// ``InputTelemetry/cursorSprites`` and ``InputTelemetry/cursorShapes``.
 ///
-/// Each image is stored once: its PNG is only encoded the first time its fingerprint is seen.
+/// Each image is stored once: its PNG is only encoded, and its kind looked up, the first time its
+/// fingerprint is seen.
 nonisolated struct CursorShapeTracker {
 
     /// What tells cursor images apart. Arrow, I-beam and pointing hand can share a size and
@@ -31,6 +32,13 @@ nonisolated struct CursorShapeTracker {
     private(set) var shapes: [InputTelemetry.CursorShape] = []
     private var fingerprints: [Fingerprint] = []
 
+    /// Standard cursors to recognise: a new image equal to one of them gets its kind.
+    private let standardCursors: [(kind: CursorKind, fingerprint: Fingerprint)]
+
+    init(standardCursors: [(kind: CursorKind, fingerprint: Fingerprint)] = []) {
+        self.standardCursors = standardCursors
+    }
+
     /// Records that the cursor showed `fingerprint` at `time`. Only changes are kept.
     /// - Parameter png: Encodes the image; only called for a fingerprint not seen before.
     mutating func record(_ fingerprint: Fingerprint, time: Double, png: () -> Data) {
@@ -41,7 +49,8 @@ nonisolated struct CursorShapeTracker {
         } else {
             id = sprites.count
             fingerprints.append(fingerprint)
-            sprites.append(.init(id: id, size: fingerprint.size, hotspot: fingerprint.hotspot, png: png()))
+            let kind = standardCursors.first { $0.fingerprint == fingerprint }?.kind
+            sprites.append(.init(id: id, kind: kind, size: fingerprint.size, hotspot: fingerprint.hotspot, png: png()))
         }
 
         guard id != shapes.last?.sprite else { return }

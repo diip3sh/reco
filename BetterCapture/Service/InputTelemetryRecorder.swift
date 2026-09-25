@@ -36,14 +36,15 @@ final class InputTelemetryRecorder {
     ///   - filter: The content filter being recorded.
     ///   - sourceRect: The area selection, if any.
     ///   - videoSize: The video's dimensions in pixels.
+    ///   - cursorInVideo: Whether the capture draws the system cursor into the video.
     ///   - frameRate: The recording's frame rate; the cursor is polled at this rate, capped to 60 Hz.
-    func start(filter: SCContentFilter, sourceRect: CGRect?, videoSize: CGSize, frameRate: Double) {
+    func start(filter: SCContentFilter, sourceRect: CGRect?, videoSize: CGSize, cursorInVideo: Bool, frameRate: Double) {
         // AppKit locations have a bottom-left origin on the primary display, so flip against it
         primaryScreenHeight = CGDisplayBounds(CGMainDisplayID()).height
 
         let keystrokesAvailable = startKeyTap()
         telemetry = InputTelemetry(
-            capture: .init(kind: Self.kind(filter: filter, sourceRect: sourceRect), videoSize: videoSize),
+            capture: .init(kind: Self.kind(filter: filter, sourceRect: sourceRect), videoSize: videoSize, cursorInVideo: cursorInVideo),
             keystrokesAvailable: keystrokesAvailable
         )
 
@@ -53,7 +54,7 @@ final class InputTelemetryRecorder {
             self?.record(event)
         }
 
-        cursorShapes = CursorShapeTracker()
+        cursorShapes = CursorShapeTracker(standardCursors: StandardCursors.fingerprints)
         nextShapeSampleTime = 0
 
         let interval = Duration.seconds(1 / min(frameRate, 60))
@@ -139,17 +140,12 @@ final class InputTelemetryRecorder {
     /// `NSCursor.current` is only this app's cursor. `currentSystem` is slated for deprecation
     /// and may return `nil` in a future macOS; then no shapes are recorded.
     private func sampleCursorShape(at time: Double) {
-        guard let cursor = NSCursor.currentSystem else { return }
+        // Fingerprinted like the standard cursors, so a match identifies its kind
+        guard let cursor = NSCursor.currentSystem, let fingerprint = StandardCursors.fingerprint(of: cursor) else { return }
 
-        let bitmaps = cursor.image.representations.compactMap { $0 as? NSBitmapImageRep }
-        guard let smallest = bitmaps.min(by: { $0.pixelsWide < $1.pixelsWide }),
-              let largest = bitmaps.max(by: { $0.pixelsWide < $1.pixelsWide }),
-              let pixels = smallest.cgImage?.dataProvider?.data as Data?
-        else { return }
-
-        let fingerprint = CursorShapeTracker.Fingerprint(size: cursor.image.size, hotspot: cursor.hotSpot, pixels: pixels)
         cursorShapes.record(fingerprint, time: time) {
-            largest.representation(using: .png, properties: [:]) ?? Data()
+            let bitmaps = cursor.image.representations.compactMap { $0 as? NSBitmapImageRep }
+            return bitmaps.max { $0.pixelsWide < $1.pixelsWide }?.representation(using: .png, properties: [:]) ?? Data()
         }
     }
 

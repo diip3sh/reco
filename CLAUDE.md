@@ -86,13 +86,20 @@ Key facts:
 
 When telemetry is on, each distinct system cursor image (arrow, I-beam, hand, resize…) is stored once
 in the JSON (largest bitmap as base64 PNG, size + hotspot in points), plus a track of when the
-cursor changed shape. Lets a future editor redraw the cursor on a video recorded with
-**Show Cursor** off. No new setting.
+cursor changed shape. Standard cursors also get a `kind` (`CursorKind`). Lets the editor redraw the
+cursor, so with telemetry on the cursor is **left out of the video** unless
+**Settings → Video → Advanced → Keep System Cursor in Video** is on (off by default); "Show Cursor"
+is disabled meanwhile. `capture.cursorInVideo` records which applied.
 
 | File | Role |
 |---|---|
-| `Service/CursorShapeTracker.swift` | Pure dedup by fingerprint (size + hotspot + smallest bitmap's pixels); PNG encoded only for new shapes |
+| `Service/CursorShapeTracker.swift` | Pure dedup by fingerprint (size + hotspot + smallest bitmap's pixels); PNG encoded and kind looked up only for new shapes |
+| `Service/StandardCursors.swift` | Fingerprints of the running OS's 44 standard `NSCursor`s; another app's arrow is byte-identical to `NSCursor.arrow`, so exact match classifies |
 | `Service/InputTelemetryRecorder.swift` | `sampleCursorShape(at:)` reads `NSCursor.currentSystem` at ≤15 Hz |
+| `Model/SettingsStore.swift` | `keepSystemCursorInVideo`, `leavesCursorToEditor`, `capturesCursor` (used for `SCStreamConfiguration.showsCursor`) in the `// MARK: - Cursor Capture` extension |
+
+Arrow and I-beam bitmaps go up to 10× (280×400 px); other standard cursors only 2×, so the captured
+PNG is as sharp as anything `NSCursor` offers at edit time.
 
 Risk: `NSCursor.currentSystem` is marked "to be deprecated" with no public replacement. If it starts
 returning nil, sprites are simply empty; nothing else breaks.
@@ -138,13 +145,13 @@ Key facts:
 
 ```
 version, keystrokesAvailable,
-capture:       { kind: display|window|area, videoSize: [w,h] }
+capture:       { kind: display|window|area, videoSize: [w,h], cursorInVideo }  // missing → true
 geometry:      [{ time, screenRect, contentRect, boundingRect?, contentScale, scaleFactor }]
 cursor:        [{ time, location: [x,y] }]            // only when changed
 clicks:        [{ time, location, button, isDown, clickCount }]
 scrolls:       [{ time, location, delta: [dx,dy] }]
 keys:          [{ time, keyCode, modifiers: [..], isRepeat }]
-cursorSprites: [{ id, size, hotspot, png: base64 }]
+cursorSprites: [{ id, kind?, size, hotspot, png: base64 }]
 cursorShapes:  [{ time, sprite }]
 ```
 CG geometry types encode as arrays (`CGRect` → `[[x,y],[w,h]]`). Bump `version` on incompatible changes.
@@ -162,8 +169,8 @@ CG geometry types encode as arrays (`CGRect` → `[[x,y],[w,h]]`). Bump `version
 | Item | Status |
 |---|---|
 | F1 input telemetry | Done |
-| F2 cursor sprites | Done |
-| F3 `.bettercapture` project bundle | **Deferred — build it together with the editor (S1).** Plain `.mov` stays the default; bundle only when telemetry is on; clipboard/notifications must use `screen.mov` inside it |
+| F2 cursor sprites | Done, incl. editor spec Phase 0 (hidden cursor, `cursorInVideo`, `kind`); a real recording still has to confirm kinds for I-beam/hand |
+| F3 `.bettercapture` project bundle | **Not needed for editor v1**, which uses a `<name>.edit.json` sidecar (spec 0003, open question 2). Revisit when opening recordings from outside the output folder |
 | F4 pause / resume | Done and verified on real recordings: audio ticks land within ~30 ms across pauses, all tracks match video length (incl. stop while paused) |
 | F5 countdown | Done |
 | F6 audio robustness (mic hot-swap #208, gain #209, level meters #153) | Todo |
