@@ -263,6 +263,14 @@ struct GeneralSettingsView: View {
                 }
             }
 
+            Section("Recording") {
+                Picker("Countdown", selection: $settings.countdownDuration) {
+                    ForEach(CountdownDuration.allCases) { duration in
+                        Text(duration.displayName).tag(duration)
+                    }
+                }
+            }
+
             Section("Software Updates") {
                 Toggle("Automatically check for updates", isOn: $updaterService.automaticallyChecksForUpdates)
 

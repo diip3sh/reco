@@ -76,8 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if viewModel.isRecording {
                     await viewModel.stopRecording(copyToClipboard: copyToClipboard)
                 } else {
-                    // Starts right away when content is already selected, like the global shortcut
-                    await viewModel.toggleRecording()
+                    // Starts right away when content is already selected, without the countdown so automation stays precise
+                    await viewModel.toggleRecording(countdown: false)
                 }
             }
         case "pause":

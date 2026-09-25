@@ -37,7 +37,7 @@ struct BetterCaptureApp: App {
     }
 }
 
-/// The label shown in the menu bar (icon, duration timer, or pause symbol while paused)
+/// The label shown in the menu bar (icon, countdown seconds, duration timer, or pause symbol while paused)
 struct MenuBarLabel: View {
     let viewModel: RecorderViewModel
 
@@ -50,6 +50,8 @@ struct MenuBarLabel: View {
             if let image = timerImage {
                 Image(nsImage: image)
             }
+        } else if let remaining = viewModel.countdown.remaining {
+            Image(systemName: "\(remaining).circle")
         } else {
             Image(systemName: "record.circle")
         }

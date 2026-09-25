@@ -505,6 +505,22 @@ final class SettingsStore {
         }
     }
 
+    // MARK: - Countdown Settings
+
+    /// Seconds to count down before a user-started recording. `bettercapture://` URLs skip it.
+    var countdownDuration: CountdownDuration {
+        get {
+            access(keyPath: \.countdownDuration)
+            let seconds = defaults.object(forKey: "countdownDuration") as? Int
+            return seconds.flatMap(CountdownDuration.init(rawValue:)) ?? .three
+        }
+        set {
+            withMutation(keyPath: \.countdownDuration) {
+                defaults.set(newValue.rawValue, forKey: "countdownDuration")
+            }
+        }
+    }
+
     // MARK: - Content Filter Settings
 
     var showCursor: Bool {

@@ -34,7 +34,7 @@ xcodebuild -scheme BetterCapture -configuration Debug -destination 'platform=mac
   && { pkill -x BetterCapture; open /tmp/bc-build/dd/Build/Products/Debug/BetterCapture.app; }
 ```
 
-- Tests: same command with `test` instead of `build -quiet` (Swift Testing, 182 tests).
+- Tests: same command with `test` instead of `build -quiet` (Swift Testing, 189 tests).
 - Lint: `swiftlint lint --quiet <files>` — new code must be clean. Pre-existing warnings:
   `AssetWriter.swift` (file_length, type_body_length, 2× function_body_length) and
   `RecorderViewModel.swift` (file_length, type_body_length). Don't make them worse; SwiftLint skips
@@ -108,6 +108,28 @@ indicator stays on); every sample is dropped and the paused time is cut from the
 
 Audio buffers straddling a pause edge are dropped whole (gap ≤ ~21 ms per edge, marked `ponytail:`).
 
+### F5 — Countdown (`feat/countdown`)
+
+**Settings → General → Recording → Countdown**: Off / 3 / 5 / 10 s (default 3). Every user start (menu
+Start, pre-record overlay Start, Toggle Recording shortcut) shows a big number centred on what will be
+recorded (area, window, or display) and the seconds in the menu bar. `bettercapture://toggle` /
+`toggle-copy` skip the countdown (and cancel one that's running) so automation stays precise.
+
+| File | Role |
+|---|---|
+| `Service/RecordingCountdown.swift` | `@Observable` tick loop (`remaining`), cancellable, injectable one-second sleep for tests |
+| `View/CountdownOverlay.swift`, `View/CountdownView.swift` | Click-through, non-activating `.screenSaver` panel with the number; Esc as a temporary global hotkey |
+| `Model/CountdownDuration.swift` | Setting enum (`SettingsStore.countdownDuration`) |
+| `ViewModel/RecorderViewModel.swift` | `// MARK: - Countdown` extension: `startRecordingWithCountdown()`, `cancelCountdown()`; `toggleRecording(countdown:)` |
+
+Key facts:
+- State stays `.idle` while counting (`isRecording` false); `countdown.isRunning` is the flag. When it
+  ends, the panel is ordered out *before* the normal `startRecording()`, so it never lands in the video.
+- Cancel: Esc, or starting again (menu, shortcut). Nothing is created. Esc is
+  `KeyboardShortcuts.events(.keyDown, for: Shortcut(.escape))`: a Carbon hotkey, registered only during
+  the countdown, so it swallows Esc system-wide only then. If another app holds a global Esc hotkey,
+  registration fails silently; the menu/shortcut still cancel.
+
 ### Telemetry JSON (version 3)
 
 ```
@@ -139,7 +161,7 @@ CG geometry types encode as arrays (`CGRect` → `[[x,y],[w,h]]`). Bump `version
 | F2 cursor sprites | Done |
 | F3 `.bettercapture` project bundle | **Deferred — build it together with the editor (S1).** Plain `.mov` stays the default; bundle only when telemetry is on; clipboard/notifications must use `screen.mov` inside it |
 | F4 pause / resume | Done and verified on real recordings: audio ticks land within ~30 ms across pauses, all tracks match video length (incl. stop while paused) |
-| F5 countdown | Next candidate |
+| F5 countdown | Done |
 | F6 audio robustness (mic hot-swap #208, gain #209, level meters #153) | Todo |
 | F7 remember last selection (#172) | Todo |
 | F8 Swift 6 language mode | Todo — flip before the editor grows |
@@ -158,7 +180,7 @@ Reference repos for later work: `syi0808/screenize` and `imbhargav5/open-recorde
 
 Recordings can be scripted: select content once in the menu, then drive the running build with
 `open -g -a /tmp/bc-build/dd/Build/Products/Debug/BetterCapture.app "bettercapture://toggle"` (starts
-when content is selected, stops when recording) and `bettercapture://pause`. Use `-a` with the path:
+when content is selected, stops when recording; no countdown) and `bettercapture://pause`. Use `-a` with the path:
 a plain `open` may launch another copy (e.g. Xcode's DerivedData build). Play `afplay` ticks at
 logged wall times, then check each tick lands where expected in the audio, shifted by the paused time.
 Watch the app's logs with `/usr/bin/log stream --level info --predicate 'subsystem == "com.sattlerjoshua.BetterCapture"'`

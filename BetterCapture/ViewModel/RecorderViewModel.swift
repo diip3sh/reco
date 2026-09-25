@@ -98,6 +98,10 @@ final class RecorderViewModel {
     private let selectionBorderFrame = SelectionBorderFrame()
     private let recordingOverlay = RecordingOverlayCoordinator()
 
+    /// The countdown before a user-started recording; read by the menu bar UI
+    let countdown = RecordingCountdown()
+    private let countdownOverlay = CountdownOverlay()
+
     // MARK: - Initialization
 
     init() {
@@ -135,11 +139,18 @@ final class RecorderViewModel {
 
     /// Toggles the recording state. If no content is selected, triggers the appropriate
     /// selection flow based on the user's content selection mode preference.
-    func toggleRecording() async {
+    /// - Parameter countdown: Whether a start waits for the countdown from Settings. `bettercapture://`
+    ///   URLs pass `false` so automation starts instantly; that also cancels a countdown already running.
+    func toggleRecording(countdown useCountdown: Bool = true) async {
         if isRecording {
             await stopRecording()
         } else if hasContentSelected {
-            await startRecording()
+            if useCountdown {
+                await startRecordingWithCountdown()
+            } else {
+                cancelCountdown()
+                await startRecording()
+            }
         } else {
             // No content selected — trigger selection based on the user's preferred mode
             switch ContentSelectionMode.current {
@@ -535,6 +546,64 @@ extension RecorderViewModel {
 
         isPaused.toggle()
         logger.info("Recording \(self.isPaused ? "paused" : "resumed")")
+    }
+}
+
+// MARK: - Countdown
+
+extension RecorderViewModel {
+
+    /// Starts recording after the countdown from Settings, or cancels the countdown if one is running.
+    ///
+    /// Every user-initiated start goes through here. The normal `startRecording()` runs once the
+    /// countdown ends; with the countdown off, or nothing to record, it is called straight away.
+    func startRecordingWithCountdown() async {
+        if countdown.isRunning {
+            cancelCountdown()
+            return
+        }
+
+        let seconds = settings.countdownDuration.rawValue
+        guard seconds > 0, canStartRecording else {
+            await startRecording()
+            return
+        }
+
+        recordingOverlay.dismiss()
+        countdownOverlay.show(countdown: countdown, center: countdownCenter) { [weak self] in
+            self?.cancelCountdown()
+        }
+        countdown.start(seconds: seconds) { [weak self] in
+            guard let self else { return }
+            // Ordered out before capture starts, so the number never appears in the recording
+            countdownOverlay.dismiss()
+            await startRecording()
+        }
+        logger.info("Countdown started: \(seconds)s")
+    }
+
+    /// Cancels a running countdown. Nothing is recorded.
+    func cancelCountdown() {
+        guard countdown.isRunning else { return }
+        countdown.cancel()
+        countdownOverlay.dismiss()
+        logger.info("Countdown cancelled")
+    }
+
+    /// The centre of what is about to be recorded, in screen coordinates (bottom-left origin)
+    private var countdownCenter: CGPoint? {
+        if let selectedScreenRect {
+            return CGPoint(x: selectedScreenRect.midX, y: selectedScreenRect.midY)
+        }
+
+        guard let filter = selectedContentFilter,
+              let frame = filter.includedWindows.first?.frame ?? filter.includedDisplays.first?.frame,
+              let primaryScreen = NSScreen.screens.first else {
+            return nil
+        }
+
+        // SCWindow and SCDisplay frames use CoreGraphics coordinates: top-left origin of the primary display
+        return CGPoint(x: frame.midX, y: primaryScreen.frame.height - frame.midY)
     }
 }
 

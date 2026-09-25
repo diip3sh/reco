@@ -50,6 +50,15 @@ struct MenuBarView: View {
                 ) {
                     viewModel.togglePause()
                 }
+            } else if let remaining = viewModel.countdown.remaining {
+                MenuBarActionButton(
+                    title: "Cancel Countdown (\(remaining))",
+                    systemImage: "xmark.circle",
+                    accentColor: .orange
+                ) {
+                    viewModel.cancelCountdown()
+                }
+                .padding(.top, 8)
             } else {
                 MenuBarActionButton(
                     title: "Start Recording",
@@ -58,7 +67,7 @@ struct MenuBarView: View {
                     isDisabled: !viewModel.canStartRecording
                 ) {
                     Task {
-                        await viewModel.startRecording()
+                        await viewModel.startRecordingWithCountdown()
                         dismiss()
                     }
                 }

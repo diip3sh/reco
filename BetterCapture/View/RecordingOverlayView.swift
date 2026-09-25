@@ -75,7 +75,7 @@ struct RecordingOverlayView: View {
         VStack(spacing: 6) {
             Button("Start Recording", systemImage: "record.circle") {
                 Task {
-                    await viewModel.startRecording()
+                    await viewModel.startRecordingWithCountdown()
                 }
             }
             .buttonStyle(OverlayButtonStyle(labelColor: .green, weight: .semibold))

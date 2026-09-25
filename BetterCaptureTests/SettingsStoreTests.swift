@@ -94,6 +94,17 @@ struct SettingsStoreTests {
         #expect(store.captureMicrophone == false)
     }
 
+    @Test func defaultCountdownIsThreeSeconds() {
+        let store = makeStore()
+        #expect(store.countdownDuration == .three)
+    }
+
+    @Test func countdownOffIsPersisted() {
+        let store = makeStore()
+        store.countdownDuration = .off
+        #expect(store.countdownDuration == .off)
+    }
+
     // MARK: - Codec/Container Compatibility
 
     @Test func settingProResToMP4SwitchesContainerToMOV() {
