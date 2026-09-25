@@ -82,6 +82,7 @@ final class RecorderViewModel {
     private let captureEngine: CaptureEngine
     private let assetWriter: AssetWriter
     private let cameraSession = CameraSession()
+    private let inputTelemetry = InputTelemetryRecorder()
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture", category: "RecorderViewModel")
 
@@ -278,6 +279,9 @@ final class RecorderViewModel {
             logger.info("Starting capture engine...")
             try await captureEngine.startCapture(with: settings, videoSize: videoSize, sourceRect: selectedSourceRect)
 
+            // Started after the last throwing step, so the catch below has nothing to undo
+            startInputTelemetryIfNeeded()
+
             // Re-show the area selection border now that capture has started
             if isAreaSelection, let screenRect = selectedScreenRect {
                 selectionBorderFrame.show(screenRect: screenRect)
@@ -313,6 +317,17 @@ final class RecorderViewModel {
         }
     }
 
+    /// Starts input telemetry recording, if enabled and a content filter is selected.
+    private func startInputTelemetryIfNeeded() {
+        guard settings.recordInputTelemetry, let filter = selectedContentFilter else { return }
+        inputTelemetry.start(
+            filter: filter,
+            sourceRect: selectedSourceRect,
+            videoSize: videoSize,
+            frameRate: settings.frameRate.effectiveFrameRate
+        )
+    }
+
     /// Stops the current recording session
     func stopRecording(copyToClipboard: Bool = false) async {
         guard isRecording else { return }
@@ -320,6 +335,7 @@ final class RecorderViewModel {
         state = .stopping
         stopTimer()
         selectionBorderFrame.dismiss()
+        inputTelemetry.stop()
 
         do {
             // Stop capture and camera session
@@ -327,13 +343,19 @@ final class RecorderViewModel {
             cameraSession.stop()
             isPresenterOverlayActive = false
 
-            // Finalize file
+            // Finalize file. The session start is read first because finishing resets it.
+            let sessionStart = assetWriter.sessionStartTime
             let (outputURL, videoFrameCount) = try await assetWriter.finishWriting()
 
             state = .idle
             recordingDuration = 0
 
             logger.info("Recording stopped and saved to: \(outputURL.lastPathComponent)")
+
+            // Written while the output directory's security scope is still held
+            if videoFrameCount > 0 {
+                await inputTelemetry.writeSidecar(for: outputURL, sessionStart: sessionStart, geometry: captureEngine.frameGeometry.track)
+            }
 
             // Brief delay to ensure screen sharing mode has fully stopped before sending notification
             try? await Task.sleep(for: .milliseconds(100))

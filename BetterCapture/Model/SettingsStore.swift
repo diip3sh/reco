@@ -490,6 +490,21 @@ final class SettingsStore {
         }
     }
 
+    // MARK: - Input Telemetry Settings
+
+    /// Whether cursor, click, scroll and keystroke telemetry is saved as a JSON sidecar next to each recording
+    var recordInputTelemetry: Bool {
+        get {
+            access(keyPath: \.recordInputTelemetry)
+            return defaults.bool(forKey: "recordInputTelemetry")
+        }
+        set {
+            withMutation(keyPath: \.recordInputTelemetry) {
+                defaults.set(newValue, forKey: "recordInputTelemetry")
+            }
+        }
+    }
+
     // MARK: - Content Filter Settings
 
     var showCursor: Bool {

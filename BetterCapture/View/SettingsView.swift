@@ -146,6 +146,17 @@ struct VideoSettingsView: View {
 
                 Toggle("Native Resolution", isOn: $settings.captureNativeResolution)
                     .help(captureNativeResHelpText)
+
+                Toggle(isOn: $settings.recordInputTelemetry) {
+                    Text("Record Input Telemetry")
+                    Text("Saves cursor, clicks, scrolls and keystrokes next to each recording. Keystrokes need Input Monitoring permission (relaunch after granting).")
+                }
+                .onChange(of: settings.recordInputTelemetry) { _, isEnabled in
+                    // Ask up front; without Input Monitoring keystrokes are simply skipped
+                    if isEnabled && !CGPreflightListenEventAccess() {
+                        _ = CGRequestListenEventAccess()
+                    }
+                }
             }
 
             Section("Display Elements") {

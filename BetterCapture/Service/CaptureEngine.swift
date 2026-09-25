@@ -38,6 +38,9 @@ final class CaptureEngine: NSObject {
     /// The delegate must be set before starting capture and not changed during capture
     nonisolated(unsafe) weak var sampleBufferDelegate: CaptureEngineSampleBufferDelegate?
 
+    /// Per-frame capture geometry for input telemetry, fed on the capture queue
+    nonisolated let frameGeometry = CaptureGeometryTracker()
+
     private(set) var contentFilter: SCContentFilter?
     private(set) var isCapturing = false
     private(set) var isPresenterOverlayActive = false
@@ -131,6 +134,9 @@ final class CaptureEngine: NSObject {
             isWindowCapture: captureStyle == .window,
             capturesAudio: settings.captureSystemAudio && !needsDedicatedAudioStream
         )
+
+        // Before the stream exists, so its first frame is already tracked
+        frameGeometry.reset(isEnabled: settings.recordInputTelemetry)
 
         stream = SCStream(filter: filteredContent, configuration: streamConfig, delegate: self)
 
@@ -430,6 +436,7 @@ extension CaptureEngine: SCStreamOutput {
         switch type {
         case .screen:
             sampleBufferDelegate?.captureEngine(self, didOutputVideoSampleBuffer: sampleBuffer)
+            frameGeometry.record(sampleBuffer)
         case .audio:
             sampleBufferDelegate?.captureEngine(self, didOutputAudioSampleBuffer: sampleBuffer)
         case .microphone:

@@ -385,6 +385,13 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
 
     // MARK: - Timing
 
+    /// Host-clock time of the session's first sample, which is time zero of the output file.
+    ///
+    /// `.invalid` until a sample arrives. `finishWriting()` resets it, so read it before that.
+    var sessionStartTime: CMTime {
+        lock.withLockUnchecked { sessionAnchor }
+    }
+
     /// Opens the writing session on the first sample from any track.
     ///
     /// The anchor is shared by video and both audio tracks so they all resolve to a

@@ -39,6 +39,11 @@ struct SettingsStoreTests {
         #expect(store.frameRate == .fps60)
     }
 
+    @Test func recordInputTelemetryIsOffByDefault() {
+        let store = makeStore()
+        #expect(store.recordInputTelemetry == false)
+    }
+
     @Test func defaultVideoQualityIsMedium() {
         let store = makeStore()
         #expect(store.videoQuality == .medium)

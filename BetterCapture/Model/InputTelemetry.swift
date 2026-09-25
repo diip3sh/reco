@@ -1,0 +1,214 @@
+//
+//  InputTelemetry.swift
+//  BetterCapture
+//
+//  Created by Diip3sh on 25.09.26.
+//
+
+import CoreGraphics
+import Foundation
+
+/// Input telemetry saved next to a recording as a `.telemetry.json` sidecar, for editing features
+/// such as auto-zoom, cursor smoothing, click highlights and keystroke overlays.
+///
+/// Times are seconds on the video timeline, where 0 is the first frame of the file. Locations are
+/// global CoreGraphics points - top-left origin on the primary display, Y increasing downwards -
+/// the space `CGDisplayBounds` uses. ``videoPixel(for:geometry:)`` maps a location into the video
+/// with the ``geometry`` entry in effect at its time.
+nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
+
+    /// Bumped whenever the file layout changes incompatibly.
+    var version = 2
+    var capture: Capture
+
+    /// Whether keystrokes were recorded. False when Input Monitoring was not granted.
+    var keystrokesAvailable: Bool
+
+    /// Where the captured content was on screen and in the video, whenever that changed.
+    var geometry: [Geometry] = []
+    var cursor: [CursorSample] = []
+    var clicks: [Click] = []
+    var scrolls: [Scroll] = []
+    var keys: [Key] = []
+
+    // MARK: - Types
+
+    /// What kind of content ``Capture`` describes.
+    nonisolated enum CaptureKind: String, Codable, Sendable {
+        case display
+        case window
+        case area
+    }
+
+    /// What was recorded.
+    nonisolated struct Capture: Codable, Equatable, Sendable {
+        var kind: CaptureKind
+
+        /// The video's dimensions in pixels.
+        var videoSize: CGSize
+    }
+
+    /// ScreenCaptureKit's `SCStreamFrameInfo` metadata, recorded at the first complete frame and
+    /// whenever a value changed, e.g. when a captured window moved or resized.
+    ///
+    /// Each entry applies until the next one; the first also applies before its time. Values are
+    /// stored raw so ``InputTelemetry/videoPixel(for:geometry:)`` can be corrected without
+    /// re-recording should ScreenCaptureKit's semantics differ from its documentation.
+    nonisolated struct Geometry: Codable, Equatable, Sendable {
+        var time: Double
+
+        /// Where the captured content is on screen, in global points (`screenRect`).
+        var screenRect: CGRect
+
+        /// Where the content is drawn in the video frame, in frame points (`contentRect`).
+        var contentRect: CGRect
+
+        /// The captured windows' bounds in the video frame, in frame points (`boundingRect`),
+        /// when ScreenCaptureKit reports it.
+        var boundingRect: CGRect?
+
+        /// How much the content was scaled to fit the frame (`contentScale`).
+        var contentScale: CGFloat
+
+        /// Pixels per frame point (`scaleFactor`).
+        var scaleFactor: CGFloat
+    }
+
+    /// The cursor position, sampled whenever it changed.
+    nonisolated struct CursorSample: Codable, Equatable, Sendable {
+        var time: Double
+        var location: CGPoint
+    }
+
+    nonisolated enum MouseButton: String, Codable, Sendable {
+        case left
+        case right
+        case other
+    }
+
+    nonisolated struct Click: Codable, Equatable, Sendable {
+        var time: Double
+        var location: CGPoint
+        var button: MouseButton
+        var isDown: Bool
+        var clickCount: Int
+    }
+
+    nonisolated struct Scroll: Codable, Equatable, Sendable {
+        var time: Double
+        var location: CGPoint
+
+        /// Points on trackpads and Magic Mouse, lines on classic scroll wheels.
+        var delta: CGVector
+    }
+
+    /// A key press. Only the physical key and modifiers are stored, never the typed characters.
+    nonisolated struct Key: Codable, Equatable, Sendable {
+        var time: Double
+        var keyCode: Int
+        var modifiers: [String]
+        var isRepeat: Bool
+    }
+
+    // MARK: - Conversion
+
+    /// Share of a window shadow's vertical extent that sits above the window; the rest is below.
+    ///
+    /// ponytail: measured on macOS 27 (39.2 of 112 pt for an active window). ScreenCaptureKit only
+    /// reports the shadow's total size, so re-measure if Apple changes window shadows.
+    static let shadowTopFraction: CGFloat = 0.35
+
+    /// Maps a global location into video pixels (top-left origin) with the geometry in effect:
+    /// `pixel = (contentRect.origin + (location - screenRect.origin + shadowInset) * contentScale) * scaleFactor`.
+    ///
+    /// `screenRect` is the bare content on screen; `contentRect` is where it is drawn in the frame,
+    /// scaled by `contentScale` into frame points, each `scaleFactor` pixels wide. For windows
+    /// captured with their shadow, `contentRect` also covers the shadow, so the window sits inset
+    /// by half the extra width horizontally and by ``shadowTopFraction`` of the extra height.
+    static func videoPixel(for location: CGPoint, geometry: Geometry) -> CGPoint {
+        let frameOrigin = geometry.contentRect.origin
+        let screenOrigin = geometry.screenRect.origin
+        let shadowWidth = max(geometry.contentRect.width / geometry.contentScale - geometry.screenRect.width, 0)
+        let shadowHeight = max(geometry.contentRect.height / geometry.contentScale - geometry.screenRect.height, 0)
+        let insetX = shadowWidth / 2
+        let insetY = shadowHeight * shadowTopFraction
+        return CGPoint(
+            x: (frameOrigin.x + (location.x - screenOrigin.x + insetX) * geometry.contentScale) * geometry.scaleFactor,
+            y: (frameOrigin.y + (location.y - screenOrigin.y + insetY) * geometry.contentScale) * geometry.scaleFactor
+        )
+    }
+
+    /// Converts a host-clock time into video time, or `nil` when it falls outside the video.
+    /// - Parameters:
+    ///   - hostTime: Seconds on the host clock, which ScreenCaptureKit sample timestamps and
+    ///     `NSEvent.timestamp` share.
+    ///   - anchor: The host time of the video's first frame.
+    ///   - duration: The video's length in seconds.
+    static func videoTime(hostTime: Double, anchor: Double, duration: Double) -> Double? {
+        let time = hostTime - anchor
+        return time >= 0 && time <= duration ? time : nil
+    }
+
+    /// Flips an AppKit screen location (bottom-left origin of the primary display) into global
+    /// CoreGraphics points (top-left origin).
+    static func topLeft(_ location: CGPoint, primaryScreenHeight: CGFloat) -> CGPoint {
+        CGPoint(x: location.x, y: primaryScreenHeight - location.y)
+    }
+
+    /// Names the modifier keys held in `flags`, in the order macOS displays them.
+    static func modifierNames(_ flags: CGEventFlags) -> [String] {
+        let names: [(flag: CGEventFlags, name: String)] = [
+            (.maskControl, "control"),
+            (.maskAlternate, "option"),
+            (.maskShift, "shift"),
+            (.maskCommand, "command"),
+            (.maskSecondaryFn, "function"),
+            (.maskAlphaShift, "capsLock")
+        ]
+        return names.filter { flags.contains($0.flag) }.map(\.name)
+    }
+
+    /// The sidecar for a recording: same folder and base name, `.telemetry.json` extension.
+    static func sidecarURL(for videoURL: URL) -> URL {
+        videoURL.deletingPathExtension().appendingPathExtension("telemetry").appendingPathExtension("json")
+    }
+
+    /// Returns a copy with every time moved onto the video timeline and events outside it dropped.
+    ///
+    /// The last cursor position and geometry before the first frame are kept at time 0, so values
+    /// that never change during the recording are still known.
+    func rebased(anchor: Double, duration: Double) -> InputTelemetry {
+        var copy = self
+        copy.geometry = Self.rebaseTrack(geometry, time: \.time, anchor: anchor, duration: duration)
+        copy.cursor = Self.rebaseTrack(cursor, time: \.time, anchor: anchor, duration: duration)
+        copy.clicks = Self.rebase(clicks, time: \.time, anchor: anchor, duration: duration)
+        copy.scrolls = Self.rebase(scrolls, time: \.time, anchor: anchor, duration: duration)
+        copy.keys = Self.rebase(keys, time: \.time, anchor: anchor, duration: duration)
+        return copy
+    }
+
+    private static func rebase<Event>(
+        _ events: [Event], time: WritableKeyPath<Event, Double>, anchor: Double, duration: Double
+    ) -> [Event] {
+        events.compactMap { event in
+            guard let videoTime = videoTime(hostTime: event[keyPath: time], anchor: anchor, duration: duration) else {
+                return nil
+            }
+            var event = event
+            event[keyPath: time] = videoTime
+            return event
+        }
+    }
+
+    /// Like `rebase`, but keeps the track's last sample before the first frame at time 0.
+    private static func rebaseTrack<Sample>(
+        _ samples: [Sample], time: WritableKeyPath<Sample, Double>, anchor: Double, duration: Double
+    ) -> [Sample] {
+        var rebased = rebase(samples, time: time, anchor: anchor, duration: duration)
+        if var start = samples.last(where: { $0[keyPath: time] < anchor }) {
+            start[keyPath: time] = 0
+            rebased.insert(start, at: 0)
+        }
+        return rebased
+    }
+}
