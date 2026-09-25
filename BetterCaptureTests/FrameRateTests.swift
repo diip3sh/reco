@@ -8,6 +8,7 @@
 import Testing
 @testable import BetterCapture
 
+@MainActor
 struct FrameRateTests {
 
     // MARK: - displayName

@@ -10,6 +10,7 @@ import CoreGraphics
 @testable import BetterCapture
 
 /// Tests for the pure window classification rules behind the content filters.
+@MainActor
 struct ContentFilterRulesTests {
 
     // MARK: - Fixtures

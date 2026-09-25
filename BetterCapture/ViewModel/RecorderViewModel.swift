@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 import AppKit
 import OSLog
 

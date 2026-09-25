@@ -10,6 +10,7 @@ import Foundation
 import Testing
 @testable import BetterCapture
 
+@MainActor
 struct CaptureSizeCalculatorTests {
 
     // MARK: - Fixtures

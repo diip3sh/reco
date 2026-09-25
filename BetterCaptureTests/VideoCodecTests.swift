@@ -9,6 +9,7 @@ import Testing
 import CoreVideo
 @testable import BetterCapture
 
+@MainActor
 struct VideoCodecTests {
 
     // MARK: - supportsAlphaChannel

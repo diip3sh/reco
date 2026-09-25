@@ -16,7 +16,7 @@ import Foundation
 /// which QuickTime resolves through the track's edit list but tools that ignore
 /// edit lists - `ffmpeg`'s concat demuxer among them - do not. Padding the head
 /// of the track with silence keeps every track starting at time zero.
-enum SilentAudioBuffer {
+nonisolated enum SilentAudioBuffer {
 
     /// Builds a silent sample buffer matching an existing audio format.
     ///
