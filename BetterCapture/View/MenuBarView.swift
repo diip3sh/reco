@@ -42,6 +42,14 @@ struct MenuBarView: View {
                     }
                 }
                 .padding(.top, 8)
+
+                MenuBarActionButton(
+                    title: viewModel.isPaused ? "Resume Recording" : "Pause Recording",
+                    systemImage: viewModel.isPaused ? "play.circle" : "pause.circle",
+                    accentColor: .orange
+                ) {
+                    viewModel.togglePause()
+                }
             } else {
                 MenuBarActionButton(
                     title: "Start Recording",

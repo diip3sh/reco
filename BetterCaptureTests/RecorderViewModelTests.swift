@@ -58,4 +58,15 @@ struct RecorderViewModelTests {
         let viewModel = RecorderViewModel()
         #expect(viewModel.recordingDuration == 0)
     }
+
+    @Test func isNotPausedByDefault() {
+        let viewModel = RecorderViewModel()
+        #expect(viewModel.isPaused == false)
+    }
+
+    @Test func togglePauseDoesNothingWhenNotRecording() {
+        let viewModel = RecorderViewModel()
+        viewModel.togglePause()
+        #expect(viewModel.isPaused == false)
+    }
 }

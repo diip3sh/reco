@@ -76,6 +76,13 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     private var hasPaddedAudio = false
     private var hasPaddedMicrophone = false
 
+    /// Pauses in the recording, on the host clock. Samples captured during a pause are dropped
+    /// and the paused time is cut from the output timeline.
+    private var pauses = RecordingPauses()
+
+    /// The newest frame captured during the pause in progress, shown from the resume point.
+    private var pausedPixelBuffer: CVPixelBuffer?
+
     /// Upper bound on how many frames a single gap may be filled with, as a
     /// multiple of `gridFrameRate`. A capture that stalls for longer than this is
     /// left with a hole rather than blocking the capture queue.
@@ -232,16 +239,6 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         lock.withLockUnchecked {
             guard let assetWriter, assetWriter.status == .writing else { return }
 
-            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            startSessionIfNeeded(at: presentationTime)
-
-            // Snap to the constant frame rate grid. Frames that land on a slot at or
-            // before one already claimed are dropped: capture jitter can deliver two
-            // frames inside a single slot, and Presenter Overlay can emit an outright
-            // non-monotonic timestamp, which permanently fails the writer.
-            let index = gridIndex(for: presentationTime)
-            guard index > pendingIndex else { return }
-
             // Extract pixel buffer from sample buffer
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
                 logger.warning("No image buffer in complete video frame")
@@ -263,6 +260,22 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
                 CVBufferSetAttachment(pixelBuffer, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ, .shouldPropagate)
                 CVBufferSetAttachment(pixelBuffer, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_2020, .shouldPropagate)
             }
+
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            guard let offset = timelineOffset(of: sampleBuffer) else {
+                // Kept for resume, since no new frame may arrive while the screen stays unchanged
+                if pauses.isPaused {
+                    pausedPixelBuffer = pixelBuffer
+                }
+                return
+            }
+
+            // Snap to the constant frame rate grid. Frames that land on a slot at or
+            // before one already claimed are dropped: capture jitter can deliver two
+            // frames inside a single slot, and Presenter Overlay can emit an outright
+            // non-monotonic timestamp, which permanently fails the writer.
+            let index = gridIndex(for: presentationTime - offset)
+            guard index > pendingIndex else { return }
 
             // Hand the frame to the drain loop rather than appending here. The writer
             // only accepts a short burst before `isReadyForMoreMediaData` goes false,
@@ -345,19 +358,18 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             guard let assetWriter,
                 assetWriter.status == .writing,
                 let audioInput,
-                audioInput.isReadyForMoreMediaData
+                audioInput.isReadyForMoreMediaData,
+                let offset = timelineOffset(of: sampleBuffer, duration: CMSampleBufferGetDuration(sampleBuffer))
             else {
                 return
             }
 
-            startSessionIfNeeded(at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-
             if !hasPaddedAudio {
                 hasPaddedAudio = true
-                padWithSilence(sampleBuffer, into: audioInput, label: "system audio")
+                padWithSilence(sampleBuffer, offset: offset, into: audioInput, label: "system audio")
             }
 
-            append(sampleBuffer, rebasedInto: audioInput, label: "audio")
+            append(sampleBuffer, offset: offset, rebasedInto: audioInput, label: "audio")
         }
     }
 
@@ -367,19 +379,18 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
             guard let assetWriter,
                 assetWriter.status == .writing,
                 let microphoneInput,
-                microphoneInput.isReadyForMoreMediaData
+                microphoneInput.isReadyForMoreMediaData,
+                let offset = timelineOffset(of: sampleBuffer, duration: CMSampleBufferGetDuration(sampleBuffer))
             else {
                 return
             }
 
-            startSessionIfNeeded(at: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-
             if !hasPaddedMicrophone {
                 hasPaddedMicrophone = true
-                padWithSilence(sampleBuffer, into: microphoneInput, label: "microphone")
+                padWithSilence(sampleBuffer, offset: offset, into: microphoneInput, label: "microphone")
             }
 
-            append(sampleBuffer, rebasedInto: microphoneInput, label: "microphone")
+            append(sampleBuffer, offset: offset, rebasedInto: microphoneInput, label: "microphone")
         }
     }
 
@@ -405,39 +416,54 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         logger.info("Session anchored at capture time: \(presentationTime.seconds)")
     }
 
-    /// Converts a capture timestamp into an index on the constant frame rate grid.
-    private func gridIndex(for presentationTime: CMTime) -> Int {
-        let elapsed = (presentationTime - sessionAnchor).seconds
+    /// Opens the session on the first kept sample and returns what to subtract from the sample's
+    /// timestamps to place it on the output timeline: the session anchor plus the time paused
+    /// before it. `nil` for a sample overlapping a pause, which is dropped. Call under `lock`.
+    ///
+    /// Audio passes its buffer's duration so a buffer straddling a pause edge is dropped whole;
+    /// keeping it would overlap the audio written after resume.
+    /// ponytail: that leaves a gap of up to one buffer (~21 ms) at each pause edge. Fill it with
+    /// `SilentAudioBuffer` if players that ignore edit lists drift out of sync.
+    private func timelineOffset(of sampleBuffer: CMSampleBuffer, duration: CMTime = .zero) -> CMTime? {
+        let start = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard let pausedTime = pauses.pausedTime(start: start, end: start + duration) else { return nil }
+        startSessionIfNeeded(at: start)
+        return sessionAnchor + pausedTime
+    }
+
+    /// Converts a time on the output timeline into an index on the constant frame rate grid.
+    private func gridIndex(for timelineTime: CMTime) -> Int {
+        let elapsed = timelineTime.seconds
         guard elapsed.isFinite else { return lastFrameIndex + 1 }
         return max(0, Int((elapsed * Double(gridFrameRate)).rounded()))
     }
 
-    /// Writes silence covering the gap between the session anchor and this track's
-    /// first sample, so the track begins at time zero.
+    /// Writes silence covering the gap between the start of the output timeline and this track's
+    /// first sample, so the track begins at time zero. `offset` is the sample's timeline offset.
     private func padWithSilence(
-        _ sampleBuffer: CMSampleBuffer, into input: AVAssetWriterInput, label: String
+        _ sampleBuffer: CMSampleBuffer, offset: CMTime, into input: AVAssetWriterInput, label: String
     ) {
-        let offset = CMSampleBufferGetPresentationTimeStamp(sampleBuffer) - sessionAnchor
-        guard offset.isNumeric, offset > .zero,
+        let start = CMSampleBufferGetPresentationTimeStamp(sampleBuffer) - offset
+        guard start.isNumeric, start > .zero,
             let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
             let silence = SilentAudioBuffer.make(
-                matching: formatDescription, duration: offset, at: .zero)
+                matching: formatDescription, duration: start, at: .zero)
         else {
             return
         }
 
         if input.append(silence) {
-            logger.info("Padded \(label) with \(offset.seconds * 1000, format: .fixed(precision: 1))ms of silence")
+            logger.info("Padded \(label) with \(start.seconds * 1000, format: .fixed(precision: 1))ms of silence")
         } else {
             logger.error("Failed to pad \(label) with silence")
         }
     }
 
-    /// Rebases a sample buffer against the session anchor and appends it.
+    /// Rebases a sample buffer onto the output timeline and appends it.
     private func append(
-        _ sampleBuffer: CMSampleBuffer, rebasedInto input: AVAssetWriterInput, label: String
+        _ sampleBuffer: CMSampleBuffer, offset: CMTime, rebasedInto input: AVAssetWriterInput, label: String
     ) {
-        guard let rebased = rebase(sampleBuffer) else {
+        guard let rebased = rebase(sampleBuffer, by: offset) else {
             logger.error("Failed to rebase \(label) sample buffer")
             return
         }
@@ -447,17 +473,16 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         }
     }
 
-    /// Returns a copy of `sampleBuffer` with its timestamps shifted so the session
-    /// anchor maps to zero.
-    private func rebase(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
+    /// Returns a copy of `sampleBuffer` with `offset` subtracted from its timestamps.
+    private func rebase(_ sampleBuffer: CMSampleBuffer, by offset: CMTime) -> CMSampleBuffer? {
         guard var timings = try? sampleBuffer.sampleTimingInfos() else { return nil }
 
         for index in timings.indices {
             timings[index].presentationTimeStamp = CMTimeSubtract(
-                timings[index].presentationTimeStamp, sessionAnchor)
+                timings[index].presentationTimeStamp, offset)
             if timings[index].decodeTimeStamp.isNumeric {
                 timings[index].decodeTimeStamp = CMTimeSubtract(
-                    timings[index].decodeTimeStamp, sessionAnchor)
+                    timings[index].decodeTimeStamp, offset)
             }
         }
 
@@ -521,6 +546,8 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         hasLoggedFirstFrame = false
         hasPaddedAudio = false
         hasPaddedMicrophone = false
+        pauses = RecordingPauses()
+        pausedPixelBuffer = nil
     }
 
     // MARK: - Finalization
@@ -644,6 +671,53 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
         }
     }
 
+}
+
+// MARK: - Pausing
+
+extension AssetWriter {
+
+    /// Drops every sample captured from `time` on until `resume(at:)`. The capture keeps running.
+    func pause(at time: CMTime = CMClockGetTime(CMClockGetHostTimeClock())) {
+        lock.withLockUnchecked { pauses.pause(at: time) }
+    }
+
+    /// Resumes writing with the samples captured from `time` on. The paused time is cut from the file.
+    func resume(at time: CMTime = CMClockGetTime(CMClockGetHostTimeClock())) {
+        lock.withLockUnchecked {
+            guard pauses.isPaused else { return }
+
+            // Nothing was written before the pause, so the first sample after it opens the session
+            guard hasStartedSession else {
+                pauses = RecordingPauses()
+                pausedPixelBuffer = nil
+                return
+            }
+
+            pauses.resume(at: time)
+
+            // ScreenCaptureKit only delivers frames when the screen changes, so resume on the last
+            // frame captured during the pause rather than the one from before it
+            if let pausedPixelBuffer {
+                self.pausedPixelBuffer = nil
+                let index = gridIndex(for: time - sessionAnchor - pauses.total)
+                if index > pendingIndex {
+                    pendingPixelBuffer = pausedPixelBuffer
+                    pendingIndex = index
+                }
+            }
+        }
+
+        // Written now: the next captured frame would replace it before the drain loop runs
+        drainVideo()
+    }
+
+    /// The recording's pauses in host-clock seconds; one still in progress ends at infinity.
+    ///
+    /// `finishWriting()` resets them, so read them before that.
+    var pauseIntervals: [Range<Double>] {
+        lock.withLockUnchecked { pauses.intervals }
+    }
 }
 
 // MARK: - CaptureEngineSampleBufferDelegate

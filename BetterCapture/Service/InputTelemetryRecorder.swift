@@ -96,8 +96,9 @@ final class InputTelemetryRecorder {
     /// - Parameters:
     ///   - videoURL: The finished recording. Its folder must still be accessible.
     ///   - sessionStart: The host-clock time of the video's first frame.
+    ///   - pauses: The recording's paused intervals in host-clock seconds, cut from the video.
     ///   - geometry: The capture geometry track, timed on the host clock.
-    func writeSidecar(for videoURL: URL, sessionStart: CMTime, geometry: [InputTelemetry.Geometry]) async {
+    func writeSidecar(for videoURL: URL, sessionStart: CMTime, pauses: [Range<Double>], geometry: [InputTelemetry.Geometry]) async {
         guard var telemetry, sessionStart.isNumeric else { return }
         self.telemetry = nil
         telemetry.geometry = geometry
@@ -109,7 +110,7 @@ final class InputTelemetryRecorder {
         let url = InputTelemetry.sidecarURL(for: videoURL)
 
         do {
-            let data = try JSONEncoder().encode(telemetry.rebased(anchor: sessionStart.seconds, duration: duration))
+            let data = try JSONEncoder().encode(telemetry.rebased(anchor: sessionStart.seconds, duration: duration, pauses: pauses))
             try data.write(to: url, options: .atomic)
             logger.info("Input telemetry saved to: \(url.lastPathComponent)")
         } catch {

@@ -93,6 +93,58 @@ struct InputTelemetryTests {
         #expect(rebased.cursorShapes == [.init(time: 0, sprite: 0), .init(time: 3, sprite: 1)])
     }
 
+    // MARK: - Pauses
+
+    @Test func videoTimeCutsPausedTime() {
+        let pauses = [102.0..<105.0, 107.0..<Double.infinity]
+        #expect(InputTelemetry.videoTime(hostTime: 101, anchor: 100, duration: 10, pauses: pauses) == 1)
+        #expect(InputTelemetry.videoTime(hostTime: 103, anchor: 100, duration: 10, pauses: pauses) == nil)
+        #expect(InputTelemetry.videoTime(hostTime: 106, anchor: 100, duration: 10, pauses: pauses) == 3)
+        #expect(InputTelemetry.videoTime(hostTime: 108, anchor: 100, duration: 10, pauses: pauses) == nil)
+    }
+
+    @Test func rebasedDropsEventsDuringAPauseAndShiftsLaterOnes() {
+        var telemetry = InputTelemetry(capture: capture, keystrokesAvailable: true)
+        telemetry.clicks = [
+            .init(time: 101, location: .zero, button: .left, isDown: true, clickCount: 1),
+            .init(time: 103, location: .zero, button: .left, isDown: false, clickCount: 1),
+            .init(time: 106, location: .zero, button: .left, isDown: true, clickCount: 1)
+        ]
+        telemetry.keys = [.init(time: 104, keyCode: 8, modifiers: [], isRepeat: false)]
+
+        let rebased = telemetry.rebased(anchor: 100, duration: 10, pauses: [102..<105])
+
+        #expect(rebased.clicks.map(\.time) == [1, 3])
+        #expect(rebased.keys.isEmpty)
+    }
+
+    @Test func rebasedMovesTheLastCursorPositionDuringAPauseToTheResumePoint() {
+        var telemetry = InputTelemetry(capture: capture, keystrokesAvailable: false)
+        telemetry.cursor = [
+            .init(time: 99, location: CGPoint(x: 1, y: 1)),
+            .init(time: 103, location: CGPoint(x: 2, y: 2)),
+            .init(time: 104, location: CGPoint(x: 3, y: 3)),
+            .init(time: 106, location: CGPoint(x: 4, y: 4))
+        ]
+
+        let rebased = telemetry.rebased(anchor: 100, duration: 10, pauses: [102..<105])
+
+        #expect(rebased.cursor == [
+            .init(time: 0, location: CGPoint(x: 1, y: 1)),
+            .init(time: 2, location: CGPoint(x: 3, y: 3)),
+            .init(time: 3, location: CGPoint(x: 4, y: 4))
+        ])
+    }
+
+    @Test func rebasedDropsTrackSamplesDuringAPauseStillInProgress() {
+        var telemetry = InputTelemetry(capture: capture, keystrokesAvailable: false)
+        telemetry.cursorShapes = [.init(time: 101, sprite: 0), .init(time: 103, sprite: 1)]
+
+        let rebased = telemetry.rebased(anchor: 100, duration: 10, pauses: [102..<Double.infinity])
+
+        #expect(rebased.cursorShapes == [.init(time: 1, sprite: 0)])
+    }
+
     // MARK: - CursorShapeTracker
 
     @Test func cursorShapesStoreEachImageOnceAndKeepOnlyChanges() {

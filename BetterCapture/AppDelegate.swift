@@ -43,6 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        KeyboardShortcuts.onKeyUp(for: .pauseRecording) { [viewModel] in
+            Task { @MainActor in
+                viewModel.togglePause()
+            }
+        }
+
         KeyboardShortcuts.onKeyUp(for: .selectContent) { [viewModel] in
             Task { @MainActor in
                 viewModel.presentPicker()
@@ -78,6 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
+        case "pause":
+            viewModel.togglePause()
         case "open-recordings":
             let settings = viewModel.settings
             let didStart = settings.startAccessingOutputDirectory()

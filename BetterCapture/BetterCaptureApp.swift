@@ -37,12 +37,14 @@ struct BetterCaptureApp: App {
     }
 }
 
-/// The label shown in the menu bar (icon or duration timer)
+/// The label shown in the menu bar (icon, duration timer, or pause symbol while paused)
 struct MenuBarLabel: View {
     let viewModel: RecorderViewModel
 
     var body: some View {
-        if viewModel.isRecording {
+        if viewModel.isPaused {
+            Image(systemName: "pause.circle")
+        } else if viewModel.isRecording {
             // Render the duration into a fixed-size image so the
             // NSStatusItem never recalculates its width on each tick.
             if let image = timerImage {

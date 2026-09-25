@@ -27,6 +27,9 @@ final class RecorderViewModel {
 
     private(set) var state: RecordingState = .idle
     private(set) var recordingDuration: TimeInterval = 0
+
+    /// Whether the recording is paused. `isRecording` stays true while paused.
+    private(set) var isPaused = false
     private(set) var lastError: Error?
     private(set) var selectedContentFilter: SCContentFilter?
 
@@ -334,6 +337,7 @@ final class RecorderViewModel {
 
         state = .stopping
         stopTimer()
+        isPaused = false
         selectionBorderFrame.dismiss()
         inputTelemetry.stop()
 
@@ -343,8 +347,9 @@ final class RecorderViewModel {
             cameraSession.stop()
             isPresenterOverlayActive = false
 
-            // Finalize file. The session start is read first because finishing resets it.
+            // Finalize file. The session start and pauses are read first because finishing resets them.
             let sessionStart = assetWriter.sessionStartTime
+            let pauses = assetWriter.pauseIntervals
             let (outputURL, videoFrameCount) = try await assetWriter.finishWriting()
 
             state = .idle
@@ -354,7 +359,7 @@ final class RecorderViewModel {
 
             // Written while the output directory's security scope is still held
             if videoFrameCount > 0 {
-                await inputTelemetry.writeSidecar(for: outputURL, sessionStart: sessionStart, geometry: captureEngine.frameGeometry.track)
+                await inputTelemetry.writeSidecar(for: outputURL, sessionStart: sessionStart, pauses: pauses, geometry: captureEngine.frameGeometry.track)
             }
 
             // Brief delay to ensure screen sharing mode has fully stopped before sending notification
@@ -420,7 +425,8 @@ final class RecorderViewModel {
 
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, let startTime = self.recordingStartTime else { return }
+                // Frozen while paused; togglePause() shifts the start time on resume
+                guard let self, !self.isPaused, let startTime = self.recordingStartTime else { return }
                 self.recordingDuration = Date().timeIntervalSince(startTime)
             }
         }
@@ -504,6 +510,31 @@ final class RecorderViewModel {
             }
             return DisplayGeometry(frame: CGDisplayBounds(displayID), scaleFactor: screen.backingScaleFactor)
         }
+    }
+}
+
+// MARK: - Pausing
+
+extension RecorderViewModel {
+
+    /// Pauses or resumes the recording.
+    ///
+    /// The capture keeps running while paused, so resuming is instant; the writer drops everything
+    /// captured in between and the paused time is cut from the file. Does nothing until capture has started.
+    func togglePause() {
+        guard isRecording, let recordingStartTime else { return }
+
+        if isPaused {
+            assetWriter.resume()
+            // Carry the timer on from where it was frozen
+            self.recordingStartTime = Date().addingTimeInterval(-recordingDuration)
+        } else {
+            assetWriter.pause()
+            recordingDuration = Date().timeIntervalSince(recordingStartTime)
+        }
+
+        isPaused.toggle()
+        logger.info("Recording \(self.isPaused ? "paused" : "resumed")")
     }
 }
 

@@ -11,10 +11,11 @@ import Foundation
 /// Input telemetry saved next to a recording as a `.telemetry.json` sidecar, for editing features
 /// such as auto-zoom, cursor smoothing, click highlights and keystroke overlays.
 ///
-/// Times are seconds on the video timeline, where 0 is the first frame of the file. Locations are
-/// global CoreGraphics points - top-left origin on the primary display, Y increasing downwards -
-/// the space `CGDisplayBounds` uses. ``videoPixel(for:geometry:)`` maps a location into the video
-/// with the ``geometry`` entry in effect at its time.
+/// Times are seconds on the video timeline, where 0 is the first frame of the file. Paused time is
+/// cut from it, as it is from the video. Locations are global CoreGraphics points - top-left origin
+/// on the primary display, Y increasing downwards - the space `CGDisplayBounds` uses.
+/// ``videoPixel(for:geometry:)`` maps a location into the video with the ``geometry`` entry in
+/// effect at its time.
 nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
 
     /// Bumped whenever the file layout changes incompatibly.
@@ -170,8 +171,12 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
     ///     `NSEvent.timestamp` share.
     ///   - anchor: The host time of the video's first frame.
     ///   - duration: The video's length in seconds.
-    static func videoTime(hostTime: Double, anchor: Double, duration: Double) -> Double? {
-        let time = hostTime - anchor
+    ///   - pauses: Host-time intervals cut from the video. Times inside one are dropped, later times
+    ///     move earlier by the paused time before them.
+    static func videoTime(hostTime: Double, anchor: Double, duration: Double, pauses: [Range<Double>] = []) -> Double? {
+        guard !pauses.contains(where: { $0.contains(hostTime) }) else { return nil }
+        let paused = pauses.filter { $0.upperBound <= hostTime }.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+        let time = hostTime - anchor - paused
         return time >= 0 && time <= duration ? time : nil
     }
 
@@ -201,24 +206,25 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
 
     /// Returns a copy with every time moved onto the video timeline and events outside it dropped.
     ///
-    /// The last cursor position, cursor shape and geometry before the first frame are kept at
-    /// time 0, so values that never change during the recording are still known.
-    func rebased(anchor: Double, duration: Double) -> InputTelemetry {
+    /// Paused time is cut and events during a pause are dropped. The last cursor position, cursor
+    /// shape and geometry before the first frame, or during a pause, are kept at the point where the
+    /// video starts or resumes, so values that do not change afterwards are still known.
+    func rebased(anchor: Double, duration: Double, pauses: [Range<Double>] = []) -> InputTelemetry {
         var copy = self
-        copy.geometry = Self.rebaseTrack(geometry, time: \.time, anchor: anchor, duration: duration)
-        copy.cursor = Self.rebaseTrack(cursor, time: \.time, anchor: anchor, duration: duration)
-        copy.cursorShapes = Self.rebaseTrack(cursorShapes, time: \.time, anchor: anchor, duration: duration)
-        copy.clicks = Self.rebase(clicks, time: \.time, anchor: anchor, duration: duration)
-        copy.scrolls = Self.rebase(scrolls, time: \.time, anchor: anchor, duration: duration)
-        copy.keys = Self.rebase(keys, time: \.time, anchor: anchor, duration: duration)
+        copy.geometry = Self.rebaseTrack(geometry, time: \.time, anchor: anchor, duration: duration, pauses: pauses)
+        copy.cursor = Self.rebaseTrack(cursor, time: \.time, anchor: anchor, duration: duration, pauses: pauses)
+        copy.cursorShapes = Self.rebaseTrack(cursorShapes, time: \.time, anchor: anchor, duration: duration, pauses: pauses)
+        copy.clicks = Self.rebase(clicks, time: \.time, anchor: anchor, duration: duration, pauses: pauses)
+        copy.scrolls = Self.rebase(scrolls, time: \.time, anchor: anchor, duration: duration, pauses: pauses)
+        copy.keys = Self.rebase(keys, time: \.time, anchor: anchor, duration: duration, pauses: pauses)
         return copy
     }
 
     private static func rebase<Event>(
-        _ events: [Event], time: WritableKeyPath<Event, Double>, anchor: Double, duration: Double
+        _ events: [Event], time: WritableKeyPath<Event, Double>, anchor: Double, duration: Double, pauses: [Range<Double>]
     ) -> [Event] {
         events.compactMap { event in
-            guard let videoTime = videoTime(hostTime: event[keyPath: time], anchor: anchor, duration: duration) else {
+            guard let videoTime = videoTime(hostTime: event[keyPath: time], anchor: anchor, duration: duration, pauses: pauses) else {
                 return nil
             }
             var event = event
@@ -227,14 +233,25 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
         }
     }
 
-    /// Like `rebase`, but keeps the track's last sample before the first frame at time 0.
+    /// Like `rebase`, but a sample from before the first frame or during a pause moves to where the
+    /// video starts or resumes, and only the last sample at any one time is kept. A pause still in
+    /// progress at stop ends at infinity, so its samples fall off the end.
     private static func rebaseTrack<Sample>(
-        _ samples: [Sample], time: WritableKeyPath<Sample, Double>, anchor: Double, duration: Double
+        _ samples: [Sample], time: WritableKeyPath<Sample, Double>, anchor: Double, duration: Double, pauses: [Range<Double>]
     ) -> [Sample] {
-        var rebased = rebase(samples, time: time, anchor: anchor, duration: duration)
-        if var start = samples.last(where: { $0[keyPath: time] < anchor }) {
-            start[keyPath: time] = 0
-            rebased.insert(start, at: 0)
+        let held = samples.map { sample in
+            var sample = sample
+            let hostTime = sample[keyPath: time]
+            sample[keyPath: time] = pauses.first { $0.contains(hostTime) }?.upperBound ?? max(hostTime, anchor)
+            return sample
+        }
+
+        var rebased: [Sample] = []
+        for sample in rebase(held, time: time, anchor: anchor, duration: duration, pauses: pauses) {
+            if rebased.last?[keyPath: time] == sample[keyPath: time] {
+                rebased.removeLast()
+            }
+            rebased.append(sample)
         }
         return rebased
     }
