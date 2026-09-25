@@ -76,12 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if viewModel.isRecording {
                     await viewModel.stopRecording(copyToClipboard: copyToClipboard)
                 } else {
-                    switch ContentSelectionMode.current {
-                    case .pickContent:
-                        viewModel.presentPicker()
-                    case .selectArea:
-                        await viewModel.presentAreaSelection()
-                    }
+                    // Starts right away when content is already selected, like the global shortcut
+                    await viewModel.toggleRecording()
                 }
             }
         case "pause":
