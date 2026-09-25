@@ -8,7 +8,7 @@
 import AppKit
 import Foundation
 import OSLog
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 
 /// A second `SCStream` that captures system audio independently of the selected content.
 ///

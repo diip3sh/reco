@@ -45,8 +45,12 @@ xcodebuild -scheme BetterCapture -configuration Debug -destination 'platform=mac
   macOS forgets the Screen Recording permission and prompts forever. If a permission gets stuck:
   `tccutil reset ScreenCapture com.sattlerjoshua.BetterCapture`, then relaunch.
 - New `.swift` files need no pbxproj edit (file-system synchronized groups).
-- App target defaults to MainActor isolation (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`), Swift 5
-  language mode. Types used off the main actor must be marked `nonisolated`.
+- App target defaults to MainActor isolation (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`), Swift 6
+  language mode. Types used off the main actor must be marked `nonisolated`: Swift 6 checks
+  isolation at runtime too, so main-actor code called from a capture queue crashes instead of racing.
+  ScreenCaptureKit isn't Sendable-annotated; files that pass its types across actors use
+  `@preconcurrency import ScreenCaptureKit`.
+- Test suites that touch main-actor app types (most models) are marked `@MainActor`.
 
 ## Features added in this fork
 
@@ -142,7 +146,7 @@ CG geometry types encode as arrays (`CGRect` → `[[x,y],[w,h]]`). Bump `version
 | F5 countdown | Next candidate |
 | F6 audio robustness (mic hot-swap #208, gain #209, level meters #153) | Todo |
 | F7 remember last selection (#172) | Todo |
-| F8 Swift 6 language mode | Todo — flip before the editor grows |
+| F8 Swift 6 language mode | Done (`chore/swift-6-mode`); needs one real recording to rule out runtime isolation crashes |
 | S1+ editor (preview, timeline, auto-zoom, cursor smoothing, backgrounds, export) | Todo, consumes the telemetry JSON |
 
 Reference repos for later work: `syi0808/screenize` and `imbhargav5/open-recorder` are Apache-2.0

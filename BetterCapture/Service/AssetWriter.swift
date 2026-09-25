@@ -14,7 +14,7 @@ import VideoToolbox
 import os
 
 /// Service responsible for writing captured media to disk using AVAssetWriter
-final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable {
+nonisolated final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable {
 
     // MARK: - Properties
 
@@ -106,7 +106,7 @@ final class AssetWriter: CaptureEngineSampleBufferDelegate, @unchecked Sendable 
     ///   - url: The output file URL
     ///   - settings: The settings store containing encoding configuration
     ///   - videoSize: The dimensions of the video
-    func setup(url: URL, settings: SettingsStore, videoSize: CGSize) throws {
+    @MainActor func setup(url: URL, settings: SettingsStore, videoSize: CGSize) throws {
         // Ensure output directory exists
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

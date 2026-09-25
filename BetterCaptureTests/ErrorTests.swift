@@ -10,6 +10,7 @@ import Foundation
 @testable import BetterCapture
 
 /// Tests that all error types provide meaningful user-facing descriptions.
+@MainActor
 struct ErrorTests {
 
     // MARK: - AssetWriterError

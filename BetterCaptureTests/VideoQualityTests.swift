@@ -8,6 +8,7 @@
 import Testing
 @testable import BetterCapture
 
+@MainActor
 struct VideoQualityTests {
 
     // MARK: - h264BitsPerPixel

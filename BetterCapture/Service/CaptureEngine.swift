@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 import OSLog
 
 /// Delegate protocol for receiving capture events (non-sample buffer events)

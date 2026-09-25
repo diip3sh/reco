@@ -12,7 +12,7 @@ import VideoToolbox
 /// Builds the `AVAssetWriterInput` output settings for a recording.
 enum AssetWriterSettings {
 
-    private static let logger = Logger(
+    nonisolated private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture", category: "AssetWriter")
 
     /// Builds the video output settings for the selected codec, quality and dynamic range.
@@ -129,7 +129,7 @@ enum AssetWriterSettings {
 
     /// Logs the pixel format, color space, and matrix of an incoming pixel buffer
     /// to help diagnose HDR color mismatches.
-    static func logPixelBufferProperties(_ pixelBuffer: CVPixelBuffer) {
+    nonisolated static func logPixelBufferProperties(_ pixelBuffer: CVPixelBuffer) {
         let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
         let fourCC = String(format: "%c%c%c%c",
                             (pixelFormat >> 24) & 0xFF,
