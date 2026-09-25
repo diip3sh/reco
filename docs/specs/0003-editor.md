@@ -1,0 +1,407 @@
+# Editor
+
+> A non-destructive editor that turns a recording and its input telemetry into a polished video: trims and cuts, click highlights, keystroke overlays, auto-zoom, a rendered cursor and a styled canvas.
+
+## Why
+
+Recordings can now carry a `.telemetry.json` sidecar (cursor, clicks, scrolls, keys and capture geometry, timed on the video timeline). Nothing uses it yet. Editing features that need to know *where the user was working* - zooming in on clicks, smoothing the cursor, showing shortcuts - are exactly what the sidecar was designed for, and they are what separates a raw screen recording from one worth sharing.
+
+## Expected outcome
+
+- After a recording, "Edit" in the saved notification, or "Edit Last Recording" in the menu bar, opens an editor window for it.
+- The editor plays the recording with every effect applied live, and scrubbing is frame accurate.
+- Edits never touch the source video or its telemetry; they are saved as a project file next to the recording and can be undone.
+- Export writes a new file that is pixel-identical to the preview, because both use the same renderer.
+- Recordings without telemetry still open: trimming, cutting, canvas styling and export work, and telemetry-driven features are disabled with an explanation.
+
+## Non-goals
+
+Multi-clip or multi-track timelines, transitions, text and shape annotations, captions, speed ramps, audio editing beyond volume and cuts, GIF export. Each can come later without changing the architecture below.
+
+---
+
+## Architecture
+
+### Components
+
+```mermaid
+graph TD
+    subgraph Recording
+        RVM[RecorderViewModel]
+        NS[NotificationService]
+    end
+
+    subgraph Editor
+        EWM[EditorWindowManager]
+        EV[EditorView]
+        EVM[EditorViewModel]
+        PC[PlaybackController]
+        PS[ProjectStore]
+        CB[CompositionBuilder]
+        RP[RenderPlan]
+        EC[EditorCompositor]
+        FR[FrameRenderer]
+        ES[ExportService]
+    end
+
+    RVM -- last recording URL --> EWM
+    NS -- Edit action --> EWM
+    EWM --> EV
+    EV --> EVM
+    EVM --> PS
+    EVM --> PC
+    EVM -- project --> RP
+    EVM --> CB
+    CB -- composition + plan --> PC
+    CB -- composition + plan --> ES
+    PC --> EC
+    ES --> EC
+    EC --> FR
+```
+
+
+| Component             | Role                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EditorWindowManager` | Opens one AppKit window per recording (hosting SwiftUI), switches the app's activation policy, holds the security scope while a window is open. |
+| `EditorViewModel`     | `@MainActor @Observable`. Owns the `EditorProject`, selection and undo; rebuilds the render plan when the project changes.                      |
+| `PlaybackController`  | `@MainActor @Observable`. Wraps `AVPlayer`: play/pause, coalesced frame-accurate seeking, current time.                                         |
+| `ProjectStore`        | Reads and writes the project file atomically; debounced autosave.                                                                               |
+| `CompositionBuilder`  | Builds the `AVMutableComposition` (kept ranges), `AVVideoComposition` and `AVAudioMix` from the project.                                        |
+| `RenderPlan`          | Immutable, `Sendable` snapshot of everything needed to draw any frame, precomputed off the main actor.                                          |
+| `EditorCompositor`    | `AVVideoCompositing` implementation. Stateless: it draws whichever frame AVFoundation asks for with the plan from its instruction.              |
+| `FrameRenderer`       | Pure function `(source frame, time, plan) -> CIImage`. The single place where pixels are decided.                                               |
+| `ExportService`       | Runs `AVAssetExportSession` with the same composition, with progress and cancellation.                                                          |
+
+
+### Decisions
+
+1. **One render path.** Preview (`AVPlayerItem.videoComposition`) and export (`AVAssetExportSession.videoComposition`) use the same custom compositor and `FrameRenderer`. What you see is what you export - by construction, not by testing.
+2. **Everything is precomputed; frames are stateless.** AVFoundation requests frames out of order (scrubbing) and in parallel (export). Springs, smoothing and auto-zoom are therefore integrated once, when the plan is built, into sampled tracks. Drawing a frame is lookups plus a small Core Image graph - no simulation state, no locks, no allocation of large buffers.
+3. **Effects live in source time.** Every time in the project (zoom segments, cuts) is seconds on the *original* video, which is also the telemetry's timeline. Only `TimeMap` knows about cuts; it maps output time to source time. Adding or moving a cut never invalidates an effect.
+4. **Non-destructive and sidecar-based.** The project is `<name>.edit.json` next to `<name>.mov` and `<name>.telemetry.json`. Deleting it resets the edit.
+5. **AppKit window, SwiftUI content.** The app is `LSUIElement` and its entry points (notifications, URL scheme, global shortcuts) have no SwiftUI view environment - the same reason `AppDelegate` owns `RecorderViewModel`. An `NSWindow` hosting an `NSHostingController` can be opened from anywhere. While any editor window is open the activation policy is `.regular` (Dock icon, ⌘-Tab, main menu); it returns to `.accessory` when the last one closes.
+6. **No third-party dependencies.** AVFoundation, Core Image (Metal-backed), SwiftUI, AppKit.
+7. **The cursor is redrawn, not baked in.** See [Cursor](#cursor).
+
+### Time and coordinate spaces
+
+
+| Space       | Unit / origin                  | Used by                                    |
+| ----------- | ------------------------------ | ------------------------------------------ |
+| Output time | seconds after cuts             | player, export, compositor requests        |
+| Source time | seconds on the original video  | project, telemetry, render plan            |
+| Screen      | global points, top-left origin | raw telemetry                              |
+| Video       | pixels, top-left origin        | `InputTelemetry.videoPixel(for:geometry:)` |
+| Core Image  | pixels, **bottom-left** origin | `FrameRenderer`                            |
+| Output      | pixels of the export canvas    | canvas layout (Phase 6)                    |
+
+
+Telemetry locations are converted to video pixels **once**, when the plan is built (one geometry lookup per event), then flipped into Core Image space by a single tested function. Nothing converts coordinates per frame.
+
+### Cursor
+
+When telemetry is on, the system cursor is hidden from the capture and the editor draws its own from telemetry. That is what makes smoothing, resizing, idle hiding and a sharp cursor at 2× zoom possible. Every editor-style recorder we surveyed does the same; only recorders without an editor bake the cursor in:
+
+
+| App                   | Cursor in the video | How it knows the cursor's shape                                                                                             | Option to keep the real cursor        |
+| --------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| Screen Studio         | never               | captured cursor images, some swapped for its own sharper versions                                                           | no                                    |
+| Cap (Studio mode)     | hidden by default   | `NSCursor.currentSystemCursor` saved as PNG; known shapes matched against a built-in hash table and drawn as vector cursors | yes, but auto-zoom is then turned off |
+| OpenScreen            | hidden by default   | `NSCursor.currentSystem` PNGs, plus an Accessibility guess (text field → I-beam, link → hand)                               | yes, but auto-zoom is then turned off |
+| Screenize, Retake     | hidden              | none; always an arrow                                                                                                       | no                                    |
+| Kap, Cap Instant mode | baked in            | none                                                                                                                        | not applicable                        |
+
+
+**Recording**
+
+- `recordInputTelemetry` hides the cursor by default. A "Keep system cursor in video" setting bakes it in instead.
+- Telemetry is still recorded when the cursor is baked in. Unlike Cap and OpenScreen, auto-zoom, click highlights and keystrokes keep working; only the cursor effects are unavailable.
+- `capture.cursorInVideo` records which of the two applies, so the editor never draws a second cursor.
+
+**Shape capture**
+
+- Read `NSCursor.currentSystem` on a timer at up to 15 Hz, whether or not the mouse moves. Screen Studio shipped a fix for a pointer shape that stuck after clicking a link without moving the mouse, which is what happens when shape is sampled only on movement; a timer catches that change within about 67 ms.
+- Identify the shape by comparing its fingerprint (size, hot spot and the pixels of its smallest bitmap) with those of `NSCursor`'s standard cursors on the running OS (arrow, I-beam, pointing hand, open and closed hand, crosshair, not-allowed, zoom, column, row and frame resize, and so on), built on first use. Measured: another app's arrow is byte-identical to `NSCursor.arrow`, so an exact match is enough. Unlike Cap's hard-coded hash table, this doesn't break with each OS release; Cap had to add hashes for new cursors, and some hand cursors went unrecognised.
+- Every shape is stored once as a PNG of its largest bitmap, with its hot spot and size in points, plus its `kind` when it matched. Custom app cursors (e.g. Figma's) and cursors enlarged in Accessibility settings have no kind.
+- Shape is a step track: an entry is written only when the shape changes. Raw data is kept raw; flicker is cleaned up in the editor.
+
+**Rendering**
+
+- Every shape is drawn from its captured PNG at its hot spot. The arrow and I-beam are captured at up to 10× (280×400 px for the arrow), so they stay sharp when zoomed; the other standard cursors only exist up to 2×, on the editing Mac too, so `NSCursor`'s own images would be no sharper. No bundled cursor art or licensing to manage.
+- `kind` is for treating shapes by meaning, e.g. restyling arrows or reading an I-beam as typing. With no shape data at all, the cursor is an arrow.
+- Shape changes that last only a moment are dropped, the way Screen Studio's "Optimize original cursor types" option does.
+
+**When** `NSCursor.currentSystem` **goes away.** The macOS 26 SDK marks it to be deprecated ("will always be nil in a future version of macOS"), and Apple's docs list it as deprecated from macOS 27. There is no public replacement; the only cheap change detection is the private `CGSCurrentCursorSeed`, which we don't use. When it returns nil, shape capture records nothing and the editor draws an arrow at the recorded positions, so the feature degrades rather than breaks. Guessing the shape from Accessibility roles, as OpenScreen does, is a possible later fallback, but it needs the Accessibility permission, so it is left out for now.
+
+### Data flow of an edit
+
+1. A view calls an intent on `EditorViewModel`, e.g. `moveZoom(id:to:)`.
+2. The view model mutates `project` through one `edit(_:_:)` function that registers undo with the previous value. Continuous gestures register one undo step when the gesture ends.
+3. `project` changing triggers a debounced autosave and a plan rebuild. The rebuild runs off the main actor and cancels the previous one.
+4. The new plan goes into a new `EditorInstruction`, and a new video composition is assigned to the player item. AVPlayer re-renders the current frame; if paused, it re-seeks to the current time to force a redraw.
+
+```swift
+/// The edit applied to one recording. Saved as `<name>.edit.json` next to it.
+///
+/// All times are seconds on the source video's timeline, the same one the telemetry uses.
+nonisolated struct EditorProject: Codable, Equatable, Sendable {
+    var version = 1
+
+    /// Source ranges left out of the output, sorted and non-overlapping. Trimming is a cut at either end.
+    var cuts: [SourceRange] = []
+    var zooms: [ZoomSegment] = []
+    var clickHighlights = ClickHighlightStyle()
+    var keystrokes = KeystrokeOverlayStyle()
+    var cursor = CursorStyle()
+    var canvas = CanvasStyle()
+    var audio = AudioMixSettings()
+}
+```
+
+```swift
+/// Everything needed to draw any frame, precomputed when the project changes.
+///
+/// Immutable and shared by every compositor request, so frames can be rendered in any
+/// order and in parallel.
+nonisolated struct RenderPlan: Sendable {
+    let timeMap: TimeMap
+    let videoSize: CGSize
+    let camera: CameraPath           // sampled viewport track, O(1) lookup
+    let cursor: CursorPath?          // nil when the cursor is baked into the video
+    let clicks: [ClickMarker]        // in Core Image pixel space, sorted by time
+    let keystrokes: [KeystrokeChip]  // labels pre-rendered into images
+    let canvas: CanvasLayout
+}
+
+extension RenderPlan {
+    /// Builds the plan off the main actor; the project's default isolation is `MainActor`.
+    @concurrent
+    static func build(project: EditorProject, source: EditorSource) async -> RenderPlan { ... }
+}
+```
+
+```swift
+/// Carries the render plan to the compositor. A new instruction is created for every plan.
+nonisolated final class EditorInstruction: NSObject, AVVideoCompositionInstructionProtocol, @unchecked Sendable {
+    let timeRange: CMTimeRange
+    let requiredSourceTrackIDs: [NSValue]?
+    let passthroughTrackID = kCMPersistentTrackID_Invalid
+    let enablePostProcessing = false
+
+    /// Frames differ even when the source does not, e.g. during a zoom.
+    let containsTweening = true
+
+    let sourceTrackID: CMPersistentTrackID
+    let plan: RenderPlan
+    ...
+}
+```
+
+---
+
+## Engineering standards
+
+These apply to every phase, on top of `AGENTS.md`.
+
+**Structure**
+
+- New code goes in a feature folder, `BetterCapture/Editor/{Model,Render,Service,ViewModel,View}`. The Xcode project uses synchronized folders, so no project file edits are needed.
+- One type per file. Files stay under 500 lines and types under 300 (the SwiftLint limits).
+- Models and algorithms are `nonisolated` value types that are `Sendable` and pure (auto-zoom, camera path, cursor smoothing, time mapping, key labels). They are unit tested without AVFoundation. Side effects stay at the edges, in the services.
+- The target builds in Swift 6 language mode with complete concurrency checking. Use `@concurrent` for work that must leave the main actor, and never GCD.
+
+**Performance**
+
+- The frame path allocates nothing proportional to the recording's length. Lookups into sorted tracks are binary searches (a small `partitioningIndex` helper); sampled tracks (camera, cursor) are O(1) index plus lerp.
+- One Metal-backed `CIContext` is shared by all compositor instances (it is thread-safe), created with `cacheIntermediates: false`, as recommended for video.
+- Source frames are requested in the decoder's native format (`420v`/`420f` for H.264/HEVC) so Core Image reads YUV directly without an extra conversion.
+- Static images (cursor sprites, keycap labels, backgrounds) are created once per plan, never per frame.
+- Main actor: high-frequency playback time is kept out of the view model's observed state. Only the playhead view reads it, through `TimelineView(.animation)` while playing, so a tick redraws the playhead and nothing else.
+- Timeline markers (thousands of clicks and keys) are drawn in one `Canvas`, not as individual views.
+- Seeks are coalesced: at most one seek is in flight, and the latest requested time replaces any pending one (the technique from Apple's QA1820). `seekingWaitsForVideoCompositionRendering = true` keeps scrubbing honest.
+- Thumbnails come from `AVAssetImageGenerator.images(for:)`, with `maximumSize` set to the on-screen size, cached, and cancelled when the timeline's scale changes.
+- Telemetry and project decoding run off the main actor. An hour of cursor samples is a JSON file of about 10 MB.
+- Plan builds, frame renders and exports are measured with `OSSignposter` intervals. **Budget:** a 4K source frame renders in under 8 ms at p95 on Apple Silicon, and a plan for a 10-minute recording builds in under 50 ms.
+
+**Correctness**
+
+- Times are `Double` seconds in the model and are converted to `CMTime` only at the AVFoundation boundary, using the source track's `naturalTimeScale`. Cut boundaries snap to frame boundaries. Doubles are never compared for equality; frame indices are.
+- Errors are a typed `EditorError`. Failures are logged with a `Logger` category per type and surfaced in the window, never swallowed.
+- Unsupported versions of telemetry and project files are reported, not guessed at.
+
+**Tests** use Swift Testing (`import Testing`), as the existing suite does. Fixtures (small telemetry and project JSON files) live in `BetterCaptureTests/Fixtures`.
+
+---
+
+## Phases
+
+Phases 0–4 are the first shippable editor. Each phase ends in a working, mergeable state.
+
+### Phase 0 - Recording prerequisites (S)
+
+Recording-side changes that the editor depends on. They come first so that every recording made from now on carries the data.
+
+1. **Land telemetry.** Done: on `main`. Its mapping is verified visually in Phase 2.
+2. **Spike:** `NSCursor.currentSystem` **in the sandbox.** Done:
+  - It returns other apps' cursors from a sandboxed build.
+  - The standard `NSCursor` set identifies them by exact fingerprint (measured for the arrow; the other kinds are checked by "Done when" below). All 44 standard cursors have a fingerprint; the only identical images are opposite frame resize cursors, which share a kind.
+  - A read costs about 0.3 ms. The PNG is encoded and the kind looked up only the first time a shape is seen.
+3. **Cursor hidden by default.** Done. When `recordInputTelemetry` is on, the capture hides the cursor. A "Keep System Cursor in Video" setting, off by default, bakes it in; telemetry is recorded either way. "Show Cursor" is disabled while it has no effect.
+4. **Telemetry v3** (see [Cursor](#cursor)). Done; the new fields are optional to read, so the version stays 3:
+  - `capture.cursorInVideo: Bool`, so the editor never draws a second cursor. Files without it are read as `true`, because `showCursor` defaults to true.
+  - `cursorSprites`: each unique shape once, as a PNG with hot spot and size in points, plus `kind` (a `CursorKind` covering the standard `NSCursor` set) when it is a standard cursor.
+  - `cursorShapes`: a step track of `(time, sprite)`, sampled at up to 15 Hz, written only on change.
+5. **Tests:** Done. Round trip, decoding files without the new fields, standard-cursor classification, deduplication of shapes, and a step track that stores only changes.
+
+**Done when:** a v3 recording made without the cursor in the video has no cursor in its frames and records the right kinds (arrow → I-beam → pointing hand) as the pointer moves across apps, and files without the new fields still decode. Only the real recording is left to check.
+
+### Phase 1 - Editor shell and playback (M)
+
+**Build**
+
+- `EditorWindowManager`: one window per recording (a second request focuses the existing one), activation policy switching, and the output folder's security scope held for the window's lifetime (`startAccessingOutputDirectory()`).
+- Entry points: an "Edit" action on the recording-saved notification, "Edit Last Recording" in the menu bar (`RecorderViewModel` keeps `lastRecordingURL`), and a `bettercapture://edit-last` URL. When the recording was made without the cursor in the video, "Edit" is the notification's default action, because the raw file has no cursor until it goes through the editor.
+- `EditorSourceLoader`: loads the asset (duration, video track, natural size, frame rate, audio tracks), the telemetry (optional, off the main actor, version checked) and the project, or creates a default one.
+- `PlaybackController`: play/pause, coalesced seeking, frame stepping (`AVPlayerItem.step(byCount:)`), and end-of-item handling.
+- Preview: `AVPlayerLayer` in an `NSViewRepresentable`, with no system controls.
+- Timeline: a filmstrip, the playhead, scrubbing, and telemetry lanes (click and key ticks) drawn in a `Canvas`.
+- `EditorProject` v1, `ProjectStore` (atomic writes, autosave after edits settle, save on close) and undo through the window's `UndoManager`.
+- Keyboard: space to play/pause, ←/→ to step a frame, ⌘Z/⇧⌘Z to undo/redo.
+
+**Done when**
+
+- The editor opens from the notification with a placeholder, and the recording is playable without blocking the UI while the asset loads.
+- Scrubbing a 10-minute 4K recording is smooth and lands on exact frames.
+- Closing the window releases the player, the thumbnails and the security scope (checked with the Memory Graph debugger), and restores the `.accessory` policy.
+- Tests: project round trip and unknown-version rejection, telemetry v2/v3 fixture decoding, `TimeMap` identity when there are no cuts.
+
+### Phase 2 - Render pipeline, overlays, export v1 (L)
+
+The core of the editor. After this phase, adding an effect means adding a precomputed track to `RenderPlan` and a step to `FrameRenderer`.
+
+**Build**
+
+- `CompositionBuilder`, `EditorInstruction`, `EditorCompositor`, `RenderPlan`, `FrameRenderer`, and plan swapping on edit.
+- **Click highlights:** a ring or ripple at the mapped click location, animated by the time since the click. Style options: color, size, duration, left/right only.
+- **Keystroke overlay:** `KeyLabelFormatter` maps a key code to a label using the current keyboard layout (`UCKeyTranslate`), plus a fixed table for special keys (⏎ ⌫ ⇥ ⎋ arrows) and modifier glyphs (⌃⌥⇧⌘). Chips are rendered once per unique label and fade after a hold time. **Privacy default: shortcuts only** (keys pressed with ⌘/⌃/⌥, and special keys). Showing all keys is opt-in with a warning, since telemetry includes anything typed, passwords too.
+- An inspector (`.inspector`) with the style controls.
+- `ExportService`: `AVAssetExportSession` with `export(to:as:)` and `states(updateInterval:)` for progress, a codec preset (HEVC, H.264, ProRes 422) and cancellation. It writes `<name>-edited.<ext>` to the output folder and reveals it in Finder.
+
+**Done when**
+
+- Click highlights land on the cursor tip in the source for display, window (including a window moved mid-recording, with and without shadow) and area recordings, on Retina and non-Retina displays. Any offset found here is fixed in `InputTelemetry.videoPixel(for:geometry:)` / `shadowTopFraction`, and the cases are added to `docs/SMOKE_TESTING.md`.
+- Changing a style while paused redraws within one frame.
+- Signposts show the render budget is met.
+- An exported frame matches the previewed frame at the same time: a test renders a synthetic source through `FrameRenderer` and checks the highlight's pixel location.
+- Tests: mapping to Core Image space, key label formatting (US layout fixture), chip timing.
+
+### Phase 3 - Trim and cut (M)
+
+**Build**
+
+- `TimeMap`: piecewise output ↔ source mapping with binary search, with cuts normalized (sorted, merged, clamped, frame-snapped).
+- `CompositionBuilder` inserts only the kept ranges, for the video and both audio tracks (system audio and microphone).
+- Timeline: trim handles, split at the playhead (S), and delete of a selected range (⌫).
+- Audio: per-track volume and mute through `AVAudioMix`, with 10-20 ms ramps at every cut so they don't click.
+
+**Done when**
+
+- Export duration equals the sum of the kept ranges, within one frame.
+- Effects stay attached to their content across cuts; they need no remapping code.
+- Tests: `TimeMap` round trips, boundaries, adjacent and overlapping cuts, cuts covering everything.
+
+### Phase 4 - Zoom (L)
+
+**Build**
+
+- `ZoomSegment`: source range, scale, focus (`.followCursor` or `.fixed(point)`), and `isAutomatic`.
+- `AutoZoomGenerator`, a pure function of the telemetry:
+  1. Activity = click downs, plus key presses located at the last click.
+  2. Consecutive events are grouped while the gap is under 2 s and the group's bounding box still fits inside the zoomed viewport.
+  3. Segment = `[first − 0.5 s, last + 1.5 s]`, clamped, with a minimum length; close segments are merged.
+  4. The focus is the group's centroid, clamped so the viewport never leaves the frame.
+
+  The constants live in `AutoZoomGenerator.Configuration`. "Regenerate" replaces automatic segments only and keeps manual ones.
+- `CameraPath`: targets over time (a segment's scale and focus, otherwise 1× centered). It is integrated with a critically damped spring at a fixed 120 Hz step, with scale interpolated in log space so zoom speed looks even. Follow-cursor moves only when the cursor leaves a central dead zone. The integrated samples are what gets stored.
+- `FrameRenderer` applies the viewport transform to the content and to content-anchored overlays (clicks, cursor); keystroke chips stay in output space.
+- Timeline: a zoom lane with segments you can drag, resize and delete, "add at playhead", and a per-segment scale control in the inspector.
+- A hint when the recording was not made at native resolution: zooming 2× halves the effective resolution (`captureNativeResolution`).
+
+**Done when**
+
+- Tests: the generator is deterministic on fixtures, produces no overlapping segments and keeps segments within the duration; the camera path has no jumps between samples beyond a threshold, keeps the viewport inside the frame, and reaches 1× between segments.
+- Zoom transitions play at full frame rate in preview.
+
+### Phase 5 - Cursor (M)
+
+Needs Phase 0 data and recordings made with the cursor hidden (`cursorInVideo == false`). Otherwise the inspector explains why cursor options are unavailable.
+
+**Build**
+
+- `CursorPath`: raw samples resampled to 120 Hz, then smoothed with a spring, using Cap's model as the starting point:
+  - A default spring of tension 470, mass 3 and friction 70.
+  - A stiffer spring within about 175 ms of a click.
+  - A glide onto the click point starting about 500 ms before the click.
+  - Jitter filtering (tiny direction reversals) before smoothing.
+
+  **Constraint:** the smoothed path passes exactly through every click location at its click time, so the cursor and the click highlight never disagree. Presets (Mellow, Smooth, Fast) set the spring constants.
+- `CursorShapeTrack`: the telemetry's shape changes, with shapes that last only briefly dropped (threshold in its configuration). For v2 files, or when capture recorded nothing, it is a single arrow.
+- `CursorSprites`: one `CIImage` per shape, built once per plan from its captured PNG and aligned by hot spot.
+- Effects: a size multiplier, a press animation on click (scale to 0.8× over about 130 ms), and hiding when idle (off by default; fades out after 2 s).
+
+**Done when**
+
+- Tests: smoothing lag is bounded, the path hits every click exactly, brief shape changes are dropped, v2 files fall back to an arrow, and idle detection works.
+- The cursor is sharp at 2× zoom and its hot spot sits on click highlights at every zoom level.
+
+### Phase 6 - Canvas and export polish (L)
+
+**Build**
+
+- Canvas: aspect presets (source, 16:9, 9:16, 1:1, 4:3), padding, corner radius, shadow, and a background (color, gradient, or image through a user-selected file with a security-scoped bookmark).
+- Export: resolution and frame rate options, and a reader/writer path reusing `AssetWriterSettings` if bitrate control is needed beyond presets.
+- HDR: `supportsHDRSourceFrames`, BT.2020 PQ/HLG colorimetry on the composition, and 10-bit output buffers. Until this phase, HDR sources are converted to SDR by AVFoundation, the default when the compositor doesn't declare HDR support.
+- Alpha: a transparent background exports as ProRes 4444.
+- A recents list of the output folder's recordings, with thumbnails.
+
+**Done when**
+
+- Every export preset plays in QuickTime.
+- HDR exports keep PQ/HLG metadata (checked on the track's format description).
+- The smoke test matrix is extended.
+
+---
+
+## Proposed files
+
+```text
+BetterCapture/Editor/
+  Model/      EditorProject, SourceRange, ZoomSegment, ClickHighlightStyle, KeystrokeOverlayStyle,
+              CursorStyle, CanvasStyle, AudioMixSettings, EditorSource, EditorError
+  Render/     RenderPlan, TimeMap, CameraPath, CursorPath, CursorShapeTrack, CursorSprites, ClickMarker,
+              KeystrokeChip, CanvasLayout, FrameRenderer, EditorCompositor, EditorInstruction, CompositionBuilder
+  Service/    EditorSourceLoader, ProjectStore, ThumbnailProvider, ExportService,
+              AutoZoomGenerator, KeyLabelFormatter
+  ViewModel/  EditorViewModel, PlaybackController
+  View/       EditorWindowManager, EditorView, PlayerLayerView, EditorTimelineView, TransportBar,
+              EditorInspector, ExportSheet
+```
+
+`EditorTimelineView` is named so that it doesn't collide with SwiftUI's `TimelineView`.
+
+Phase 0 added `CursorKind` and `StandardCursors` next to the existing telemetry types, in `BetterCapture/Model` and `BetterCapture/Service`, because the recorder writes that data.
+
+## Risks
+
+- `NSCursor.currentSystem` **is on its way out.** It is to be deprecated (it will always be nil in a future macOS); it works in the sandbox today. The fallback is an arrow at the recorded positions, with smoothing, size and idle hiding still available. It is revisited on each macOS beta.
+- **A raw recording with the cursor hidden has no cursor.** That is intended, and the notification leads to the editor, but it has to be clear in the setting's description.
+- **Zoom quality** depends on the recording's resolution. It is mitigated by the native-resolution hint and not solved by upscaling.
+- **Export presets** don't expose bitrate. The reader/writer fallback is scoped in Phase 6.
+- **Keyboard layout drift:** labels use the editing Mac's layout, not the recording Mac's. This is acceptable for v1; the input source ID could be added to telemetry if it matters.
+
+## Open questions
+
+1. **Files outside the output folder.** In the sandbox, a user-selected video grants access to that file only, not to its `.telemetry.json` sibling or to writing `.edit.json` beside it. v1 opens recordings from the output folder only. Later options: ask for the containing folder, or declare related-item document types (`NSIsRelatedItemType`) and use `NSFilePresenter`.
+2. **Project file name.** Resolved for v1: a `<name>.edit.json` sidecar, since v1 only opens recordings from the output folder, whose security scope the app already holds. A single bundle holding video, telemetry and project is reconsidered with question 1, because a user-selected bundle grants access to everything inside it.
+3. **Camera as its own track.** Presenter Overlay bakes the camera into frames. Letting the editor lay out a separate camera track would be a recording-side change and is out of scope here.
+

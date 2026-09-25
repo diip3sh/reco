@@ -327,6 +327,7 @@ final class RecorderViewModel {
             filter: filter,
             sourceRect: selectedSourceRect,
             videoSize: videoSize,
+            cursorInVideo: settings.capturesCursor,
             frameRate: settings.frameRate.effectiveFrameRate
         )
     }

@@ -53,6 +53,10 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
 
         /// The video's dimensions in pixels.
         var videoSize: CGSize
+
+        /// Whether the system cursor is drawn into the video. When false, an editor draws it from
+        /// ``InputTelemetry/cursor`` and the cursor sprites. Read as true from files without it.
+        var cursorInVideo = true
     }
 
     /// ScreenCaptureKit's `SCStreamFrameInfo` metadata, recorded at the first complete frame and
@@ -120,6 +124,9 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
     /// A cursor image, so an editor can redraw the cursor on a video recorded without it.
     nonisolated struct CursorSprite: Codable, Equatable, Sendable {
         var id: Int
+
+        /// The standard cursor this image is, or `nil` for any other, e.g. an app's own cursor.
+        var kind: CursorKind?
 
         /// The image's size in points.
         var size: CGSize
@@ -254,5 +261,18 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
             rebased.append(sample)
         }
         return rebased
+    }
+}
+
+// MARK: - Decoding
+
+extension InputTelemetry.Capture {
+
+    /// Decodes files written before ``cursorInVideo`` existed as having the cursor in the video.
+    nonisolated init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(InputTelemetry.CaptureKind.self, forKey: .kind)
+        videoSize = try container.decode(CGSize.self, forKey: .videoSize)
+        cursorInVideo = try container.decodeIfPresent(Bool.self, forKey: .cursorInVideo) ?? true
     }
 }

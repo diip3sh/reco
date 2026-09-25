@@ -158,10 +158,18 @@ struct VideoSettingsView: View {
                         _ = CGRequestListenEventAccess()
                     }
                 }
+
+                Toggle(isOn: $settings.keepSystemCursorInVideo) {
+                    Text("Keep System Cursor in Video")
+                    Text("When off, the cursor is left out of the video so the editor can redraw it smoothly. Recordings have no cursor until edited.")
+                }
+                .disabled(!settings.recordInputTelemetry)
             }
 
             Section("Display Elements") {
                 Toggle("Show Cursor", isOn: $settings.showCursor)
+                    .disabled(settings.leavesCursorToEditor)
+                    .help(settings.leavesCursorToEditor ? "The cursor is left for the editor while Record Input Telemetry is on" : "")
                 Toggle("Show Wallpaper", isOn: $settings.showWallpaper)
                 Toggle("Show Menu Bar", isOn: $settings.showMenuBar)
                 Toggle("Show Dock", isOn: $settings.showDock)

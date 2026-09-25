@@ -311,7 +311,7 @@ final class CaptureEngine: NSObject {
         config.queueDepth = 8
 
         // Cursor visibility
-        config.showsCursor = settings.showCursor
+        config.showsCursor = settings.capturesCursor
 
         // Window shadows
         config.ignoreShadowsDisplay = !settings.showWindowShadows

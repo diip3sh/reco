@@ -437,7 +437,7 @@ struct VideoSettingsSection: View {
 
             // Content Filter Section
             MenuBarExpandableSection(title: "Content Filter") {
-                MenuBarToggle(name: "Show Cursor", isOn: $settings.showCursor)
+                MenuBarToggle(name: "Show Cursor", isOn: $settings.showCursor, isDisabled: settings.leavesCursorToEditor)
                 MenuBarToggle(name: "Show Wallpaper", isOn: $settings.showWallpaper)
                 MenuBarToggle(name: "Show Menu Bar", isOn: $settings.showMenuBar)
                 MenuBarToggle(name: "Show Dock", isOn: $settings.showDock)
