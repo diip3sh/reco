@@ -148,7 +148,7 @@ nonisolated struct EditorProject: Codable, Equatable, Sendable {
     var version = 1
 
     /// Source ranges left out of the output, sorted and non-overlapping. Trimming is a cut at either end.
-    var cuts: [SourceRange] = []
+    var cuts: [Range<Double>] = []
     var zooms: [ZoomSegment] = []
     var clickHighlights = ClickHighlightStyle()
     var keystrokes = KeystrokeOverlayStyle()
@@ -275,6 +275,15 @@ Recording-side changes that the editor depends on. They come first so that every
 - Closing the window releases the player, the thumbnails and the security scope (checked with the Memory Graph debugger), and restores the `.accessory` policy.
 - Tests: project round trip and unknown-version rejection, telemetry v2/v3 fixture decoding, `TimeMap` identity when there are no cuts.
 
+**Status:** Built and unit tested; the manual checks above (a real 10-minute 4K recording, the Memory Graph on close) are left. Where the build differs from the plan:
+
+- `EditorProject` v1 holds only `cuts`, as `Range<Double>` like the recorder's pauses (no `SourceRange` type). Each later phase adds its fields, decoded with `decodeIfPresent` so v1 files stay readable without a version bump.
+- `EditorSourceLoader` loads what playback needs; audio tracks are added with the composition in Phase 3. `seekingWaitsForVideoCompositionRendering` is set in Phase 2, when there is a video composition for it to wait on.
+- `ProjectStore` only reads and writes; the view model debounces autosave (1 s) and saves on close. Nothing is written until the first edit.
+- `AppDelegate` owns the `EditorWindowManager`, so `RecorderViewModel` only gains `lastRecordingURL`. The notification's Edit action carries the file's URL; `InputTelemetryRecorder.writeSidecar` reports whether the cursor was left out, which makes Edit the default action.
+- Frame stepping uses `step(byCount:)` only when no seek is in flight; otherwise it seeks, so it never steps from a stale position. `FrameGrid` maps frames to times.
+- Unsupported file versions throw `UnsupportedVersionError` from `InputTelemetry` (reads v2–v3) and `EditorProject` (reads v1). A telemetry problem opens the editor without telemetry and says why; a project problem refuses to open, so a newer project file is never overwritten.
+
 ### Phase 2 - Render pipeline, overlays, export v1 (L)
 
 The core of the editor. After this phase, adding an effect means adding a precomputed track to `RenderPlan` and a step to `FrameRenderer`.
@@ -376,8 +385,8 @@ Needs Phase 0 data and recordings made with the cursor hidden (`cursorInVideo ==
 
 ```text
 BetterCapture/Editor/
-  Model/      EditorProject, SourceRange, ZoomSegment, ClickHighlightStyle, KeystrokeOverlayStyle,
-              CursorStyle, CanvasStyle, AudioMixSettings, EditorSource, EditorError
+  Model/      EditorProject, EditorSource, EditorError, FrameGrid, TimelineMarkers, ZoomSegment,
+              ClickHighlightStyle, KeystrokeOverlayStyle, CursorStyle, CanvasStyle, AudioMixSettings
   Render/     RenderPlan, TimeMap, CameraPath, CursorPath, CursorShapeTrack, CursorSprites, ClickMarker,
               KeystrokeChip, CanvasLayout, FrameRenderer, EditorCompositor, EditorInstruction, CompositionBuilder
   Service/    EditorSourceLoader, ProjectStore, ThumbnailProvider, ExportService,
@@ -389,7 +398,7 @@ BetterCapture/Editor/
 
 `EditorTimelineView` is named so that it doesn't collide with SwiftUI's `TimelineView`.
 
-Phase 0 added `CursorKind` and `StandardCursors` next to the existing telemetry types, in `BetterCapture/Model` and `BetterCapture/Service`, because the recorder writes that data.
+Phase 0 added `CursorKind` and `StandardCursors` next to the existing telemetry types, in `BetterCapture/Model` and `BetterCapture/Service`, because the recorder writes that data. Phase 1 added `UnsupportedVersionError` to `BetterCapture/Model`, because `InputTelemetry` throws it too.
 
 ## Risks
 

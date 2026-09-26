@@ -188,6 +188,31 @@ Key facts:
   the countdown, so it swallows Esc system-wide only then. If another app holds a global Esc hotkey,
   registration fails silently; the menu/shortcut still cancel.
 
+### S1 — Editor, phase 1: shell and playback (`feat/editor-shell`, spec 0003)
+
+Opens a recording in its own window with the preview, transport controls and a timeline (filmstrip,
+click/key lanes, playhead, scrubbing). Entry points: **Edit** on the recording-saved notification (its
+default action when the cursor was left out of the video), **Edit Last Recording** in the menu bar, and
+`bettercapture://edit-last`. Keys: space play/pause, ←/→ step a frame, ⌘Z/⇧⌘Z undo/redo.
+
+| File | Role |
+|---|---|
+| `Editor/View/EditorWindowManager.swift` | One `NSWindow` + `NSHostingController` per recording, owned by `AppDelegate`; `.regular` activation policy while any is open; holds the output folder's security scope until the window's project is saved |
+| `Editor/ViewModel/EditorViewModel.swift` | Loads source + project, `edit(_:_:)` (one undo step, registers redo), 1 s debounced autosave, `close()` |
+| `Editor/ViewModel/PlaybackController.swift` | `AVPlayer`, coalesced zero-tolerance seeks (QA1820), frame stepping, end of item |
+| `Editor/Service/EditorSourceLoader.swift` | Asset properties + telemetry off the main actor; telemetry problems never block opening |
+| `Editor/Service/ProjectStore.swift`, `Editor/Model/EditorProject.swift` | `<name>.edit.json` v1 (`cuts`), atomic writes; only written after an edit |
+| `Editor/Render/TimeMap.swift` | Output ↔ source time; the only type that knows about cuts |
+| `Editor/Model/FrameGrid.swift` | Frame index ↔ time on the CFR grid the writer uses |
+| `Model/UnsupportedVersionError.swift` | Thrown by `InputTelemetry` (reads v2–v3) and `EditorProject` (v1) for other versions |
+
+Key facts:
+- The playhead is observed only while paused (`pausedTime`); during playback views read
+  `currentTime` inside `TimelineView(.animation)`, so a tick redraws the playhead and time label only.
+- Frame stepping uses `AVPlayerItem.step(byCount:)` (decodes one frame; a seek decodes from the last
+  keyframe, up to 2 s back) unless a seek is still in flight.
+- Phase 1 plays the source asset directly; output time equals source time until phase 3's composition.
+
 ### Telemetry JSON (version 3)
 
 ```
@@ -201,7 +226,8 @@ keys:          [{ time, keyCode, modifiers: [..], isRepeat }]
 cursorSprites: [{ id, kind?, size, hotspot, png: base64 }]
 cursorShapes:  [{ time, sprite }]
 ```
-CG geometry types encode as arrays (`CGRect` → `[[x,y],[w,h]]`). Bump `version` on incompatible changes.
+CG geometry types encode as arrays (`CGRect` → `[[x,y],[w,h]]`). Bump `version` on incompatible changes
+and update `InputTelemetry.supportedVersions`; version 2 files lack `cursorInVideo` and the cursor fields.
 
 ## Sandbox findings (measured, keep the app sandboxed)
 
@@ -223,7 +249,8 @@ CG geometry types encode as arrays (`CGRect` → `[[x,y],[w,h]]`). Bump `version
 | F6 audio robustness (mic hot-swap #208, gain #209, level meters #153) | Todo |
 | F7 remember last selection (#172) | Todo |
 | F8 Swift 6 language mode | Done (`chore/swift-6-mode`); needs one real recording to rule out runtime isolation crashes |
-| S1+ editor (preview, timeline, auto-zoom, cursor smoothing, backgrounds, export) | Todo, consumes the telemetry JSON |
+| S1 editor phase 1: shell and playback | Done; open/scrub/close still need a check on a real 10-min 4K recording (see spec 0003) |
+| S1 editor phases 2–6 (render pipeline, cuts, zoom, cursor, canvas, export) | Todo, spec 0003 |
 
 Reference repos for later work: `syi0808/screenize` and `imbhargav5/open-recorder` are Apache-2.0
 (portable with attribution). `lzhgus/Capso` (BSL, bans screen-capture use) and
@@ -238,7 +265,8 @@ Reference repos for later work: `syi0808/screenize` and `imbhargav5/open-recorde
 
 Recordings can be scripted: select content once in the menu, then drive the running build with
 `open -g -a /tmp/bc-build/dd/Build/Products/Debug/BetterCapture.app "bettercapture://toggle"` (starts
-when content is selected, stops when recording; no countdown) and `bettercapture://pause`. Use `-a` with the path:
+when content is selected, stops when recording; no countdown), `bettercapture://pause` and
+`bettercapture://edit-last` (opens the editor). Use `-a` with the path:
 a plain `open` may launch another copy (e.g. Xcode's DerivedData build). Play `afplay` ticks at
 logged wall times, then check each tick lands where expected in the audio, shifted by the paused time.
 Watch the app's logs with `/usr/bin/log stream --level info --predicate 'subsystem == "com.sattlerjoshua.BetterCapture"'`

@@ -99,8 +99,10 @@ final class InputTelemetryRecorder {
     ///   - sessionStart: The host-clock time of the video's first frame.
     ///   - pauses: The recording's paused intervals in host-clock seconds, cut from the video.
     ///   - geometry: The capture geometry track, timed on the host clock.
-    func writeSidecar(for videoURL: URL, sessionStart: CMTime, pauses: [Range<Double>], geometry: [InputTelemetry.Geometry]) async {
-        guard var telemetry, sessionStart.isNumeric else { return }
+    /// - Returns: Whether the saved sidecar records the cursor as left out of the video, for the
+    ///   editor to draw.
+    func writeSidecar(for videoURL: URL, sessionStart: CMTime, pauses: [Range<Double>], geometry: [InputTelemetry.Geometry]) async -> Bool {
+        guard var telemetry, sessionStart.isNumeric else { return false }
         self.telemetry = nil
         telemetry.geometry = geometry
         telemetry.cursorSprites = cursorShapes.sprites
@@ -114,8 +116,10 @@ final class InputTelemetryRecorder {
             let data = try JSONEncoder().encode(telemetry.rebased(anchor: sessionStart.seconds, duration: duration, pauses: pauses))
             try data.write(to: url, options: .atomic)
             logger.info("Input telemetry saved to: \(url.lastPathComponent)")
+            return !telemetry.capture.cursorInVideo
         } catch {
             logger.error("Failed to write input telemetry: \(error.localizedDescription)")
+            return false
         }
     }
 

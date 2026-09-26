@@ -33,6 +33,9 @@ final class RecorderViewModel {
     private(set) var lastError: Error?
     private(set) var selectedContentFilter: SCContentFilter?
 
+    /// The last recording saved with video since launch, for Edit Last Recording.
+    private(set) var lastRecordingURL: URL?
+
     /// The source rectangle for area selection (in display points, top-left origin)
     private(set) var selectedSourceRect: CGRect?
 
@@ -370,21 +373,15 @@ final class RecorderViewModel {
             logger.info("Recording stopped and saved to: \(outputURL.lastPathComponent)")
 
             // Written while the output directory's security scope is still held
+            var cursorLeftToEditor = false
             if videoFrameCount > 0 {
-                await inputTelemetry.writeSidecar(for: outputURL, sessionStart: sessionStart, pauses: pauses, geometry: captureEngine.frameGeometry.track)
+                cursorLeftToEditor = await inputTelemetry.writeSidecar(for: outputURL, sessionStart: sessionStart, pauses: pauses, geometry: captureEngine.frameGeometry.track)
             }
 
             // Brief delay to ensure screen sharing mode has fully stopped before sending notification
             try? await Task.sleep(for: .milliseconds(100))
 
-            // Send notification. The file is kept either way - an audio-only recording is
-            // still worth more than a deleted one - but the user has to be told about it.
-            if videoFrameCount == 0 {
-                logger.error("Recording contains no video frames: \(outputURL.lastPathComponent)")
-                notificationService.sendRecordingMissingVideoNotification(fileURL: outputURL)
-            } else {
-                notificationService.sendRecordingSavedNotification(fileURL: outputURL)
-            }
+            reportSaved(outputURL, videoFrameCount: videoFrameCount, cursorLeftToEditor: cursorLeftToEditor)
 
             if copyToClipboard {
                 copyFileToClipboard(outputURL)
@@ -521,6 +518,25 @@ final class RecorderViewModel {
                 return nil
             }
             return DisplayGeometry(frame: CGDisplayBounds(displayID), scaleFactor: screen.backingScaleFactor)
+        }
+    }
+}
+
+// MARK: - Saved Recordings
+
+extension RecorderViewModel {
+
+    /// Notifies the user of a saved recording, and keeps it for Edit Last Recording when it has video.
+    ///
+    /// The file is kept either way - an audio-only recording is still worth more than a deleted
+    /// one - but the user has to be told about it.
+    private func reportSaved(_ outputURL: URL, videoFrameCount: Int, cursorLeftToEditor: Bool) {
+        if videoFrameCount == 0 {
+            logger.error("Recording contains no video frames: \(outputURL.lastPathComponent)")
+            notificationService.sendRecordingMissingVideoNotification(fileURL: outputURL)
+        } else {
+            lastRecordingURL = outputURL
+            notificationService.sendRecordingSavedNotification(fileURL: outputURL, opensEditor: cursorLeftToEditor)
         }
     }
 }

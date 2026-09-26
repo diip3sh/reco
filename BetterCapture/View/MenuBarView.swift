@@ -11,6 +11,7 @@ import ScreenCaptureKit
 /// The main menu bar interface for BetterCapture
 struct MenuBarView: View {
     @Bindable var viewModel: RecorderViewModel
+    let editLastRecording: () -> Void
     @Environment(\.openSettings) private var openSettings
     @Environment(\.dismiss) private var dismiss
     @State private var currentPreview: NSImage?
@@ -142,6 +143,11 @@ struct MenuBarView: View {
             MenuBarDivider()
 
             // Bottom Actions
+            MenuBarActionButton(title: "Edit Last Recording", systemImage: "film", isDisabled: viewModel.lastRecordingURL == nil) {
+                editLastRecording()
+                dismiss()
+            }
+
             MenuBarActionButton(title: "Open Output Folder", systemImage: "folder") {
                 let settings = viewModel.settings
                 let didStart = settings.startAccessingOutputDirectory()
@@ -488,5 +494,5 @@ struct PermissionRow: View {
 // MARK: - Preview
 
 #Preview {
-    MenuBarView(viewModel: RecorderViewModel())
+    MenuBarView(viewModel: RecorderViewModel()) {}
 }

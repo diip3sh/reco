@@ -17,17 +17,24 @@ final class NotificationService: NSObject {
 
     // MARK: - Constants
 
-    private enum NotificationIdentifier {
+    nonisolated private enum NotificationIdentifier {
         static let categoryRecordingSaved = "RECORDING_SAVED"
+        static let categoryRecordingEditable = "RECORDING_EDITABLE"
         static let categoryRecordingFailed = "RECORDING_FAILED"
         static let actionShowInFinder = "SHOW_IN_FINDER"
+        static let actionEdit = "EDIT"
     }
 
-    private enum UserInfoKey {
+    nonisolated private enum UserInfoKey {
         static let folderURL = "folderURL"
+        static let fileURL = "fileURL"
+        static let opensEditor = "opensEditor"
     }
 
     // MARK: - Properties
+
+    /// Opens a recording in the editor, from the notification's Edit action. Set by the app delegate.
+    @ObservationIgnored var editRecording: ((URL) -> Void)?
 
     private let settings: SettingsStore
     private let logger = Logger(
@@ -59,10 +66,24 @@ final class NotificationService: NSObject {
             options: [.foreground]
         )
 
+        // Action to open the recording in the editor
+        let editAction = UNNotificationAction(
+            identifier: NotificationIdentifier.actionEdit,
+            title: "Edit",
+            options: [.foreground]
+        )
+
         // Category for successful recording with action
         let recordingSavedCategory = UNNotificationCategory(
             identifier: NotificationIdentifier.categoryRecordingSaved,
             actions: [showInFinderAction],
+            intentIdentifiers: []
+        )
+
+        // Category for a recording with video, which the editor can open
+        let recordingEditableCategory = UNNotificationCategory(
+            identifier: NotificationIdentifier.categoryRecordingEditable,
+            actions: [editAction, showInFinderAction],
             intentIdentifiers: []
         )
 
@@ -75,6 +96,7 @@ final class NotificationService: NSObject {
 
         UNUserNotificationCenter.current().setNotificationCategories([
             recordingSavedCategory,
+            recordingEditableCategory,
             recordingFailedCategory
         ])
     }
@@ -97,14 +119,18 @@ final class NotificationService: NSObject {
 
     // MARK: - Public Methods
 
-    /// Sends a notification for a successfully saved recording
-    /// - Parameter fileURL: The URL of the saved recording file
-    func sendRecordingSavedNotification(fileURL: URL) {
+    /// Sends a notification for a successfully saved recording, with an Edit action
+    /// - Parameters:
+    ///   - fileURL: The URL of the saved recording file
+    ///   - opensEditor: Whether clicking the notification opens the editor instead of the folder
+    func sendRecordingSavedNotification(fileURL: URL, opensEditor: Bool) {
         send(
             title: "Recording Saved",
             body: "Your recording has been saved to \(fileURL.lastPathComponent)",
-            category: NotificationIdentifier.categoryRecordingSaved,
-            folderURL: fileURL.deletingLastPathComponent()
+            category: NotificationIdentifier.categoryRecordingEditable,
+            folderURL: fileURL.deletingLastPathComponent(),
+            fileURL: fileURL,
+            opensEditor: opensEditor
         )
     }
 
@@ -176,7 +202,9 @@ final class NotificationService: NSObject {
     ///   - body: The notification body
     ///   - category: The category identifier determining the available actions
     ///   - folderURL: Folder to reveal when the notification is clicked, if any
-    private func send(title: String, body: String, category: String, folderURL: URL? = nil) {
+    ///   - fileURL: Recording to open with the Edit action, if any
+    ///   - opensEditor: Whether clicking the notification opens `fileURL` in the editor instead of revealing the folder
+    private func send(title: String, body: String, category: String, folderURL: URL? = nil, fileURL: URL? = nil, opensEditor: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -185,7 +213,11 @@ final class NotificationService: NSObject {
 
         // Store the folder URL for opening when notification is clicked
         if let folderURL {
-            content.userInfo = [UserInfoKey.folderURL: folderURL.path()]
+            content.userInfo[UserInfoKey.folderURL] = folderURL.path()
+        }
+        if let fileURL {
+            content.userInfo[UserInfoKey.fileURL] = fileURL.path()
+            content.userInfo[UserInfoKey.opensEditor] = opensEditor
         }
 
         let request = UNNotificationRequest(
@@ -229,13 +261,24 @@ extension NotificationService: UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
-        let categoryIdentifier = response.notification.request.content.categoryIdentifier
+        let folderPath = userInfo[UserInfoKey.folderURL] as? String
+        let filePath = userInfo[UserInfoKey.fileURL] as? String
+        let opensEditor = userInfo[UserInfoKey.opensEditor] as? Bool ?? false
 
         switch response.actionIdentifier {
+        case NotificationIdentifier.actionEdit,
+            UNNotificationDefaultActionIdentifier where opensEditor:
+            // User chose "Edit", or tapped a notification for a recording that needs the editor
+            if let filePath {
+                await MainActor.run {
+                    editRecording?(URL(filePath: filePath))
+                }
+            }
+
         case NotificationIdentifier.actionShowInFinder,
-            UNNotificationDefaultActionIdentifier where await categoryIdentifier == NotificationIdentifier.categoryRecordingSaved:
-            // User tapped the notification or the "Show in Finder" action
-            if let folderPath = await userInfo[UserInfoKey.folderURL] as? String {
+            UNNotificationDefaultActionIdentifier:
+            // User tapped the notification or the "Show in Finder" action; only saved recordings have a folder
+            if let folderPath {
                 await MainActor.run {
                     openFolderInFinder(path: folderPath)
                 }

@@ -22,10 +22,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     let viewModel = RecorderViewModel()
 
+    private lazy var editorWindows = EditorWindowManager(settings: viewModel.settings)
+
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "BetterCapture", category: "AppDelegate")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         registerKeyboardShortcuts()
+        viewModel.notificationService.editRecording = editorWindows.open
+    }
+
+    /// Opens the last recording saved since launch in the editor.
+    func editLastRecording() {
+        guard let url = viewModel.lastRecordingURL else {
+            logger.info("No recording to edit yet")
+            return
+        }
+        editorWindows.open(url)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -82,6 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         case "pause":
             viewModel.togglePause()
+        case "edit-last":
+            editLastRecording()
         case "open-recordings":
             let settings = viewModel.settings
             let didStart = settings.startAccessingOutputDirectory()

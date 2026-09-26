@@ -20,6 +20,10 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
 
     /// Bumped whenever the file layout changes incompatibly.
     var version = 3
+
+    /// The versions this build reads. Version 2 files have no cursor sprites or shapes.
+    static let supportedVersions = 2...3
+
     var capture: Capture
 
     /// Whether keystrokes were recorded. False when Input Monitoring was not granted.
@@ -265,6 +269,27 @@ nonisolated struct InputTelemetry: Codable, Equatable, Sendable {
 }
 
 // MARK: - Decoding
+
+extension InputTelemetry {
+
+    /// Decodes a file, rejecting versions outside ``supportedVersions`` with ``UnsupportedVersionError``.
+    nonisolated init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        guard Self.supportedVersions.contains(version) else {
+            throw UnsupportedVersionError(version: version)
+        }
+        capture = try container.decode(Capture.self, forKey: .capture)
+        keystrokesAvailable = try container.decode(Bool.self, forKey: .keystrokesAvailable)
+        geometry = try container.decode([Geometry].self, forKey: .geometry)
+        cursor = try container.decode([CursorSample].self, forKey: .cursor)
+        clicks = try container.decode([Click].self, forKey: .clicks)
+        scrolls = try container.decode([Scroll].self, forKey: .scrolls)
+        keys = try container.decode([Key].self, forKey: .keys)
+        cursorSprites = try container.decodeIfPresent([CursorSprite].self, forKey: .cursorSprites) ?? []
+        cursorShapes = try container.decodeIfPresent([CursorShape].self, forKey: .cursorShapes) ?? []
+    }
+}
 
 extension InputTelemetry.Capture {
 
